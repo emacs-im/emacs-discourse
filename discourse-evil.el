@@ -11,8 +11,6 @@
 (require 'appkit-evil)
 (require 'discourse-customize)
 
-(declare-function discourse-topic-list-load-more
-                  "discourse-topic-list" ())
 (declare-function discourse-topic-list-next
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-open-topic
@@ -23,9 +21,15 @@
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-transient
                   "discourse-transient" ())
-(declare-function discourse-topic-load-more "discourse-topic" ())
+(declare-function discourse-topic-list-retry
+                  "discourse-topic-list" ())
 (declare-function discourse-topic-refresh "discourse-topic" ())
+(declare-function discourse-topic-open-latest "discourse-topic" ())
+(declare-function discourse-topic-jump-back "discourse-topic" ())
+(declare-function discourse-topic-retry "discourse-topic" ())
 (declare-function discourse-topic-transient "discourse-transient" ())
+(declare-function appkit-discussion-next-entry "appkit-discussion" ())
+(declare-function appkit-discussion-previous-entry "appkit-discussion" ())
 
 (defgroup discourse-evil nil
   "Optional native Evil integration for discourse.el."
@@ -60,7 +64,7 @@ When nil, leave Evil's initial-state selection untouched."
      "RET" #'discourse-topic-list-open-topic
      "<return>" #'discourse-topic-list-open-topic
      "g r" #'discourse-topic-list-refresh
-     "g ]" #'discourse-topic-list-load-more
+     "g R" #'discourse-topic-list-retry
      "g j" #'discourse-topic-list-next
      "g k" #'discourse-topic-list-previous
      "?" #'discourse-topic-list-transient)))
@@ -72,8 +76,10 @@ When nil, leave Evil's initial-state selection untouched."
     (:map discourse-topic-mode-map
      :nm
      "g r" #'discourse-topic-refresh
-     "g ]" #'discourse-topic-load-more
+     "g R" #'discourse-topic-retry
+     "g b" #'discourse-topic-open-latest
      "g j" #'appkit-discussion-next-entry
+     "g l" #'discourse-topic-jump-back
      "g k" #'appkit-discussion-previous-entry
      "?" #'discourse-topic-transient)))
 

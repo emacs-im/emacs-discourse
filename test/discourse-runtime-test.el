@@ -41,6 +41,30 @@
       (should (equal "Complete title" (gethash "title" topic)))
       (should (= 3 (gethash "posts_count" topic))))))
 
+(ert-deftest discourse-state-indexes-site-categories-users-and-profile ()
+  (let ((state (discourse-state-create))
+        (category (make-hash-table :test #'equal))
+        (user (make-hash-table :test #'equal))
+        (profile (make-hash-table :test #'equal)))
+    (puthash "id" 5 category)
+    (puthash "name" "General" category)
+    (puthash "id" 7 user)
+    (puthash "username" "alice" user)
+    (puthash "title" "Example Forum" profile)
+    (discourse-state-merge-categories state (list category))
+    (discourse-state-merge-user state user)
+    (discourse-state-set-site-profile state profile)
+    (should (discourse-state-categories-loaded-p state))
+    (should (equal "General"
+                   (gethash "name"
+                            (discourse-state-category state "5"))))
+    (should (equal "alice"
+                   (gethash "username"
+                            (discourse-state-user state "7"))))
+    (should (equal "Example Forum"
+                   (gethash "title"
+                            (discourse-state-site-profile state))))))
+
 (provide 'discourse-runtime-test)
 
 ;;; discourse-runtime-test.el ends here

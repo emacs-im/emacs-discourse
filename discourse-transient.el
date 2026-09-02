@@ -9,8 +9,6 @@
 
 (require 'transient)
 
-(declare-function discourse-topic-list-load-more
-                  "discourse-topic-list" ())
 (declare-function discourse-topic-list-next
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-open-topic
@@ -19,8 +17,16 @@
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-refresh
                   "discourse-topic-list" ())
-(declare-function discourse-topic-load-more "discourse-topic" ())
+(declare-function discourse-topic-list-retry
+                  "discourse-topic-list" ())
+(declare-function discourse-topic-list-retry-available-p
+                  "discourse-topic-list" ())
 (declare-function discourse-topic-refresh "discourse-topic" ())
+(declare-function discourse-topic-open-latest "discourse-topic" ())
+(declare-function discourse-topic-jump-back "discourse-topic" ())
+(declare-function discourse-topic-retry "discourse-topic" ())
+(declare-function discourse-topic-retry-available-p
+                  "discourse-topic" ())
 (declare-function appkit-discussion-next-entry "appkit-discussion" ())
 (declare-function appkit-discussion-previous-entry "appkit-discussion" ())
 
@@ -29,21 +35,25 @@
   "Actions for the current Discourse topic list."
   [["Navigate"
     ("o" "Open topic" discourse-topic-list-open-topic)
-    ("j" "Next topic" discourse-topic-list-next :transient t)
-    ("k" "Previous topic" discourse-topic-list-previous :transient t)]
+    ("n" "Next topic" discourse-topic-list-next :transient t)
+    ("p" "Previous topic" discourse-topic-list-previous :transient t)]
    ["Network"
     ("g" "Refresh" discourse-topic-list-refresh)
-    ("N" "Load more" discourse-topic-list-load-more)]])
+    ("R" "Retry failed request" discourse-topic-list-retry
+     :if discourse-topic-list-retry-available-p)]])
 
 ;;;###autoload(autoload 'discourse-topic-transient "discourse-transient" nil t)
 (transient-define-prefix discourse-topic-transient ()
   "Actions for the current Discourse topic stream."
   [["Navigate"
-    ("j" "Next post" appkit-discussion-next-entry :transient t)
-    ("k" "Previous post" appkit-discussion-previous-entry :transient t)]
+    ("b" "Latest" discourse-topic-open-latest)
+    ("l" "Previous anchor" discourse-topic-jump-back)
+    ("n" "Next post" appkit-discussion-next-entry :transient t)
+    ("p" "Previous post" appkit-discussion-previous-entry :transient t)]
    ["Network"
     ("g" "Refresh" discourse-topic-refresh)
-    ("N" "Load more" discourse-topic-load-more)]])
+    ("R" "Retry failed request" discourse-topic-retry
+     :if discourse-topic-retry-available-p)]])
 
 (provide 'discourse-transient)
 

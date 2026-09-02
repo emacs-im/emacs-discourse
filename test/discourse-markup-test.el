@@ -100,6 +100,68 @@
     (should (string-match-p "Body" (appkit-markup-plain-text document)))
     (should (string-match-p "Quoted" (appkit-markup-plain-text document)))))
 
+(ert-deftest discourse-markup-promotes-lightboxes-to-media-card-objects ()
+  (let* ((document
+          (discourse-markup-parse
+           (concat
+            "<div class=\"lightbox-wrapper\">"
+            "<a class=\"lightbox\" href=\"/original.png\" title=\"Shot\">"
+            "<img src=\"/preview.png\" alt=\"Screenshot\""
+            " width=\"660\" height=\"500\">"
+            "<span class=\"informations\">1152×872 111 KB</span>"
+            "</a></div>")
+           "https://example.test"
+           :context '(:post-id "91")))
+         (block (car (appkit-markup-document-blocks document)))
+         (value (and (appkit-markup-object-block-p block)
+                     (appkit-markup-object-block-value block)))
+         (data (and value
+                    (discourse-markup-provider-object-data value))))
+    (should (appkit-markup-object-block-p block))
+    (should (eq 'media
+                (discourse-markup-provider-object-kind value)))
+    (should (equal "https://example.test/original.png"
+                   (plist-get data :url)))
+    (should (equal "https://example.test/preview.png"
+                   (plist-get data :preview-url)))
+    (should (equal "660" (plist-get data :width)))
+    (should (equal "500" (plist-get data :height)))
+    (should (equal "1152×872 111 KB"
+                   (plist-get data :information)))
+    (should (equal '(:post-id "91")
+                   (plist-get data :context)))))
+
+(ert-deftest discourse-markup-preserves-rich-onebox-metadata ()
+  (let* ((document
+          (discourse-markup-parse
+           (concat
+            "<aside class=\"onebox githubrepo\""
+            " data-onebox-src=\"https://github.com/a/repo\">"
+            "<header class=\"source\"><a href=\"https://github.com/a/repo\">"
+            "github.com</a></header>"
+            "<article><img class=\"thumbnail\" src=\"https://img.test/repo\""
+            " width=\"690\" height=\"344\">"
+            "<h3>GitHub - a/repo</h3>"
+            "<p><span class=\"github-repo-description\">A useful package</span></p>"
+            "</article></aside>")
+           "https://example.test"
+           :context '(:post-id "91")))
+         (block (car (appkit-markup-document-blocks document)))
+         (value (appkit-markup-object-block-value block))
+         (data (discourse-markup-provider-object-data value)))
+    (should (eq 'onebox
+                (discourse-markup-provider-object-kind value)))
+    (should (equal "https://github.com/a/repo"
+                   (plist-get data :url)))
+    (should (equal "github.com" (plist-get data :provider)))
+    (should (equal "GitHub - a/repo" (plist-get data :title)))
+    (should (equal "A useful package"
+                   (plist-get data :description)))
+    (should (equal "https://img.test/repo"
+                   (plist-get data :image-url)))
+    (should (equal "githubrepo"
+                   (plist-get data :onebox-kind)))))
+
 (ert-deftest discourse-markup-has-conservative-no-libxml-fallback ()
   (cl-letf (((symbol-function 'discourse-markup-libxml-available-p)
              (lambda () nil)))

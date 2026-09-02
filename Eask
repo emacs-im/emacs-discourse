@@ -11,15 +11,21 @@
 (source "gnu")
 (source 'melpa)
 
-(depends-on "emacs" "31.1")
+(depends-on "emacs" "32.0")
 (depends-on "plz" "0.8")
 (depends-on "transient" "0.7")
-(depends-on "appkit" :file "../appkit-apps/appkit.el")
+(depends-on "video" :file
+            (expand-file-name "../video.el"
+                              (file-truename default-directory)))
+(depends-on "appkit" :file
+            (expand-file-name "../appkit.el"
+                              (file-truename default-directory)))
 
 (development
  (depends-on "evil"))
 
-(script "refresh-appkit" "eask -f install-file ../appkit-apps/appkit.el")
+(script "refresh-appkit"
+        "(cd ../appkit.el && eask -f install-file ../video.el) && eask -f install-file ../appkit.el")
 (script "test" "eask test ert test/*.el --quiet")
 (script "test-local"
-        "eask -f install-file ../appkit-apps/appkit.el && eask recompile && eask test ert test/*.el --quiet")
+        "(cd ../appkit.el && eask -f install-file ../video.el) && eask -f install-file ../appkit.el && eask recompile && eask test ert test/*.el --quiet")

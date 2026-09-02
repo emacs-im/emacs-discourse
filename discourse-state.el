@@ -15,14 +15,22 @@
                (:copier nil))
   revision
   topics
-  posts)
+  posts
+  users
+  categories
+  categories-loaded-p
+  site-profile)
 
 (defun discourse-state-create ()
   "Return fresh canonical Discourse state."
   (discourse-state--create
    :revision 0
    :topics (make-hash-table :test #'equal)
-   :posts (make-hash-table :test #'equal)))
+   :posts (make-hash-table :test #'equal)
+   :users (make-hash-table :test #'equal)
+   :categories (make-hash-table :test #'equal)
+   :categories-loaded-p nil
+   :site-profile nil))
 
 (defun discourse-state-id (value)
   "Return positive remote identifier VALUE as a decimal string."
@@ -78,6 +86,46 @@
           (discourse-state-posts state) post)
     (cl-incf (discourse-state-revision state))))
 
+(defun discourse-state-merge-user (state user)
+  "Merge USER into canonical STATE and return its ID."
+  (unless (discourse-state-p state)
+    (error "Invalid Discourse state"))
+  (prog1 (discourse-state--merge-object
+          (discourse-state-users state) user)
+    (cl-incf (discourse-state-revision state))))
+
+(defun discourse-state--merge-category-tree (table category)
+  "Merge CATEGORY and nested subcategories into canonical TABLE."
+  (discourse-state--merge-object table category)
+  (dolist (subcategory
+           (discourse-state-sequence-list
+            (gethash "subcategory_list" category)))
+    (unless (hash-table-p subcategory)
+      (error "Invalid Discourse subcategory object"))
+    (discourse-state--merge-category-tree table subcategory)))
+
+(defun discourse-state-merge-categories (state categories)
+  "Replace STATE's observed category catalog with CATEGORIES."
+  (unless (discourse-state-p state)
+    (error "Invalid Discourse state"))
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (category (discourse-state-sequence-list categories))
+      (unless (hash-table-p category)
+        (error "Invalid Discourse category object"))
+      (discourse-state--merge-category-tree table category))
+    (setf (discourse-state-categories state) table
+          (discourse-state-categories-loaded-p state) t)
+    (cl-incf (discourse-state-revision state))
+    table))
+
+(defun discourse-state-set-site-profile (state profile)
+  "Install string-keyed site PROFILE in canonical STATE."
+  (unless (and (discourse-state-p state) (hash-table-p profile))
+    (error "Invalid Discourse site profile"))
+  (setf (discourse-state-site-profile state) (copy-hash-table profile))
+  (cl-incf (discourse-state-revision state))
+  (discourse-state-site-profile state))
+
 (defun discourse-state-topic (state topic-id)
   "Return STATE's canonical TOPIC-ID observation, or nil."
   (gethash (discourse-state-id topic-id) (discourse-state-topics state)))
@@ -85,6 +133,15 @@
 (defun discourse-state-post (state post-id)
   "Return STATE's canonical POST-ID observation, or nil."
   (gethash (discourse-state-id post-id) (discourse-state-posts state)))
+
+(defun discourse-state-user (state user-id)
+  "Return STATE's canonical USER-ID observation, or nil."
+  (gethash (discourse-state-id user-id) (discourse-state-users state)))
+
+(defun discourse-state-category (state category-id)
+  "Return STATE's canonical CATEGORY-ID observation, or nil."
+  (gethash (discourse-state-id category-id)
+           (discourse-state-categories state)))
 
 (provide 'discourse-state)
 

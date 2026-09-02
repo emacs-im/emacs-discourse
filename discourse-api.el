@@ -16,6 +16,7 @@
                (:constructor discourse-topic-page-create)
                (:copier nil))
   topics
+  users
   more-url)
 
 (cl-defstruct (discourse-topic-snapshot
@@ -38,6 +39,36 @@
       (discourse-api--object item label)
       (discourse-state-id (gethash "id" item)))
     items))
+
+(defun discourse-api--category-tree (value)
+  "Validate category VALUE and its nested subcategory objects."
+  (let ((category (discourse-api--object value "category")))
+    (discourse-state-id (gethash "id" category))
+    (dolist (subcategory
+             (discourse-state-sequence-list
+              (gethash "subcategory_list" category)))
+      (discourse-api--category-tree subcategory))
+    category))
+
+(defun discourse-api--site-categories (data)
+  "Validate DATA as a Discourse site category catalog."
+  (let* ((root (discourse-api--object data "site"))
+         (categories
+          (discourse-state-sequence-list (gethash "categories" root))))
+    (dolist (category categories)
+      (discourse-api--category-tree category))
+    categories))
+
+(defun discourse-api--site-profile (data)
+  "Validate DATA as public Discourse site identity metadata."
+  (let* ((profile (discourse-api--object data "site profile"))
+         (title (gethash "title" profile))
+         (description (gethash "description" profile)))
+    (unless (and (stringp title) (not (string-empty-p title)))
+      (error "Invalid Discourse site title"))
+    (unless (or (null description) (stringp description))
+      (error "Invalid Discourse site description"))
+    profile))
 
 (defun discourse-api--invalid-result (result error-data)
   "Return invalid-response result based on RESULT and ERROR-DATA."
@@ -76,6 +107,8 @@
          (topics
           (discourse-api--objects
            (gethash "topics" topic-list) "topic"))
+         (users
+          (discourse-api--objects (gethash "users" root) "user"))
          (more-url (gethash "more_topics_url" topic-list)))
     (unless (or (null more-url)
                 (and (stringp more-url)
@@ -84,6 +117,7 @@
       (error "Invalid Discourse topic page cursor"))
     (discourse-topic-page-create
      :topics topics
+     :users users
      :more-url (and more-url (substring-no-properties more-url)))))
 
 (defun discourse-api--topic-snapshot (data)
@@ -121,6 +155,24 @@ ENDPOINT may be the server-provided `more_topics_url'."
    (lambda (result)
      (discourse-api--map-result
       result #'discourse-api--topic-page callback))
+   :owner owner))
+
+(cl-defun discourse-api-site-categories (account callback &key owner)
+  "Read and validate ACCOUNT's public category catalog."
+  (discourse-http-get
+   account "/site.json"
+   (lambda (result)
+     (discourse-api--map-result
+      result #'discourse-api--site-categories callback))
+   :owner owner))
+
+(cl-defun discourse-api-site-profile (account callback &key owner)
+  "Read and validate ACCOUNT's public site identity metadata."
+  (discourse-http-get
+   account "/site/basic-info.json"
+   (lambda (result)
+     (discourse-api--map-result
+      result #'discourse-api--site-profile callback))
    :owner owner))
 
 (cl-defun discourse-api-topic (account topic-id callback &key owner)

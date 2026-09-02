@@ -36,6 +36,27 @@
   :type 'integer
   :group 'discourse)
 
+(defcustom discourse-scroll-load-threshold 600
+  "Automatically load another page within this many characters of an edge."
+  :type 'natnum
+  :group 'discourse)
+
+(defcustom discourse-show-avatar-images t
+  "Whether graphical Discourse topic lists load participant avatars."
+  :type 'boolean
+  :group 'discourse)
+
+(defcustom discourse-show-image-previews t
+  "Whether graphical topic buffers load inline image-card previews."
+  :type 'boolean
+  :group 'discourse)
+
+(defcustom discourse-media-cache-directory
+  (locate-user-emacs-file "discourse/media/")
+  "Directory used for persistent Discourse media cache entries."
+  :type 'directory
+  :group 'discourse)
+
 (defcustom discourse-markup-source-limit (* 1024 1024)
   "Maximum cooked HTML characters accepted for one post."
   :type 'integer

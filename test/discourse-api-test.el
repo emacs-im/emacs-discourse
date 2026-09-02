@@ -29,17 +29,42 @@
       (discourse-http--endpoint-url
        account "/latest?page=2" '((ascending . t)))))))
 
-(ert-deftest discourse-api-validates-topic-page-and-server-cursor ()
+(ert-deftest discourse-api-validates-topic-page-users-and-server-cursor ()
   (let* ((topic (discourse-api-test--object "id" 42 "title" "Topic"))
+         (user (discourse-api-test--object "id" 7 "username" "alice"))
          (topic-list
           (discourse-api-test--object
            "topics" (vector topic)
            "more_topics_url" "/latest?page=1"))
-         (root (discourse-api-test--object "topic_list" topic-list))
+         (root
+          (discourse-api-test--object
+           "users" (vector user)
+           "topic_list" topic-list))
          (page (discourse-api--topic-page root)))
     (should (= 1 (length (discourse-topic-page-topics page))))
+    (should (= 1 (length (discourse-topic-page-users page))))
     (should (equal "/latest?page=1"
                    (discourse-topic-page-more-url page)))))
+
+(ert-deftest discourse-api-validates-public-site-metadata ()
+  (let* ((child
+          (discourse-api-test--object "id" 6 "name" "Child"))
+         (category
+          (discourse-api-test--object
+           "id" 5
+           "name" "General"
+           "subcategory_list" (vector child)))
+         (site
+          (discourse-api-test--object "categories" (vector category)))
+         (profile
+          (discourse-api-test--object
+           "title" "Example Forum"
+           "description" "Example description")))
+    (should (= 1 (length (discourse-api--site-categories site))))
+    (should (eq profile (discourse-api--site-profile profile)))
+    (should-error
+     (discourse-api--site-profile
+      (discourse-api-test--object "title" "")))))
 
 (ert-deftest discourse-api-validates-topic-stream-identities ()
   (let* ((post (discourse-api-test--object "id" 91 "topic_id" 42))

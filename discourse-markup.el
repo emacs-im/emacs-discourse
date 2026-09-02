@@ -216,9 +216,11 @@
            base-url)))
     (discourse-markup--object
      (if emoji-p 'emoji 'image)
-     (list :url src :alt alt
+     (list :url src :preview-url src :alt alt
            :name (discourse-markup--clean-string
-                  (discourse-markup--attribute node 'title)))
+                  (discourse-markup--attribute node 'title))
+           :width (discourse-markup--attribute node 'width)
+           :height (discourse-markup--attribute node 'height))
      (list (appkit-markup-text alt)))))
 
 (defun discourse-markup--anchor-node (node base-url depth)
@@ -245,7 +247,11 @@
         (list
          (discourse-markup--object
           'media
-          (list :url (or url preview) :preview-url preview :alt alt)
+          (list :url (or url preview) :preview-url preview :alt alt
+                :name (discourse-markup--clean-string
+                       (discourse-markup--attribute node 'title))
+                :width (discourse-markup--attribute image 'width)
+                :height (discourse-markup--attribute image 'height))
           (list (appkit-markup-text (format "[Image: %s]" alt)))))))
      ((or (member "mention" classes) (member "mention-group" classes))
       (list
@@ -439,25 +445,83 @@
       fallback))))
 
 (defun discourse-markup--onebox-block (node base-url depth)
-  "Return provider onebox block for DOM NODE."
+  "Return a rich provider onebox block for DOM NODE."
   (let* ((article
           (discourse-markup--find-descendant
            node (lambda (child) (eq (car child) 'article))))
          (anchor
           (discourse-markup--find-descendant
            node (lambda (child) (eq (car child) 'a))))
+         (source
+          (discourse-markup--find-descendant
+           node
+           (lambda (child)
+             (and (eq (car child) 'header)
+                  (discourse-markup--class-p child "source")))))
+         (title-node
+          (discourse-markup--find-descendant
+           (or article node)
+           (lambda (child) (memq (car child) '(h1 h2 h3 h4)))))
+         (description-node
+          (or
+           (discourse-markup--find-descendant
+            (or article node)
+            (lambda (child)
+              (discourse-markup--class-p
+               child "github-repo-description")))
+           (discourse-markup--find-descendant
+            (or article node)
+            (lambda (child) (eq (car child) 'p)))))
+         (image
+          (discourse-markup--find-descendant
+           (or article node)
+           (lambda (child) (eq (car child) 'img))))
          (url
           (discourse-markup--safe-url
            (or (discourse-markup--attribute node 'data-onebox-src)
                (and anchor (discourse-markup--attribute anchor 'href)))
            base-url))
+         (image-url
+          (discourse-markup--safe-url
+           (and image
+                (or (discourse-markup--attribute image 'src)
+                    (discourse-markup--attribute
+                     image 'data-original-src)))
+           base-url))
+         (provider
+          (and source
+               (string-trim
+                (discourse-markup--text-content source (1+ depth)))))
+         (title
+          (and title-node
+               (string-trim
+                (discourse-markup--text-content
+                 title-node (1+ depth)))))
+         (description
+          (and description-node
+               (string-trim
+                (discourse-markup--text-content
+                 description-node (1+ depth)))))
          (fallback
           (discourse-markup--blocks
            (discourse-markup--children (or article node))
            base-url (1+ depth))))
     (list
      (discourse-markup--object-block
-      'onebox (list :url url) fallback))))
+      'onebox
+      (list :url url
+            :provider provider
+            :title title
+            :description description
+            :image-url image-url
+            :width (and image
+                        (discourse-markup--attribute image 'width))
+            :height (and image
+                         (discourse-markup--attribute image 'height))
+            :onebox-kind
+            (car (remove "onebox"
+                         (discourse-markup--classes node))))
+      fallback))))
 
 (defun discourse-markup--details-block (node base-url depth)
   "Return semantic details object block for DOM NODE."
@@ -553,6 +617,63 @@
       (walk node depth))
     (string-join (nreverse rows) "\n")))
 
+(defun discourse-markup--lightbox-block (node base-url depth)
+  "Return a media card object for Discourse lightbox NODE."
+  (let* ((anchor
+          (discourse-markup--find-descendant
+           node (lambda (child) (eq (car child) 'a)) (1+ depth)))
+         (image
+          (discourse-markup--find-descendant
+           node (lambda (child) (eq (car child) 'img)) (1+ depth)))
+         (information
+          (discourse-markup--find-descendant
+           node
+           (lambda (child)
+             (and (eq (car child) 'span)
+                  (discourse-markup--class-p child "informations")))
+           (1+ depth)))
+         (alt
+          (discourse-markup--clean-string
+           (or (and image (discourse-markup--attribute image 'alt))
+               (and anchor (discourse-markup--attribute anchor 'title))
+               "image")))
+         (url
+          (discourse-markup--safe-url
+           (and anchor (discourse-markup--attribute anchor 'href))
+           base-url))
+         (preview-url
+          (discourse-markup--safe-url
+           (and image
+                (or (discourse-markup--attribute image 'src)
+                    (discourse-markup--attribute
+                     image 'data-original-src)))
+           base-url))
+         (fallback
+          (list
+           (appkit-markup-paragraph
+            (list (appkit-markup-text
+                   (format "[Image: %s]" alt)))))))
+    (list
+     (discourse-markup--object-block
+      'media
+      (list :url (or url preview-url)
+            :preview-url preview-url
+            :alt alt
+            :name
+            (discourse-markup--clean-string
+             (and anchor
+                  (discourse-markup--attribute anchor 'title)))
+            :width (and image
+                        (discourse-markup--attribute image 'width))
+            :height (and image
+                         (discourse-markup--attribute image 'height))
+            :information
+            (and information
+                 (string-trim
+                  (discourse-markup--text-content
+                   information (1+ depth)))))
+      fallback))))
+
 (defun discourse-markup--lazy-video-block (node base-url depth)
   "Return lazy-video provider block for DOM NODE."
   (ignore depth)
@@ -593,6 +714,9 @@
          (discourse-markup--children node) base-url (1+ depth)))))
      ((and (eq tag 'aside) (discourse-markup--class-p node "quote"))
       (discourse-markup--quote-block node base-url depth))
+     ((and (eq tag 'div)
+           (discourse-markup--class-p node "lightbox-wrapper"))
+      (discourse-markup--lightbox-block node base-url depth))
      ((and (eq tag 'div)
            (discourse-markup--class-p node "lazy-video-container"))
       (discourse-markup--lazy-video-block node base-url depth))
