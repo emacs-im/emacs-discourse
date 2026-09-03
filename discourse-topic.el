@@ -657,33 +657,15 @@ An explicit post key wins over the default initial `first' position."
                when position return position)
       'preserve))
 
-(defun discourse-topic--sync (view invalidations)
-  "Synchronize topic VIEW from coalesced INVALIDATIONS."
-  (let* ((state (discourse-topic--state view))
-         (events (appkit-view-pending-events-snapshot view))
-         (event-count (length events))
-         (parts (appkit-invalidations-parts invalidations))
-         (entry-keys (appkit-invalidations-entry-keys invalidations))
-         (resources (appkit-invalidations-resource-keys invalidations))
-         (geometry-p (memq 'geometry parts))
-         (reconcile-p
-          (or geometry-p
-              (appkit-invalidations-structure-p invalidations)
-              (memq 'entries parts)
-              entry-keys resources))
-         (rows (and reconcile-p (discourse-topic--project state))))
-    (appkit-projection-sync
-     view rows
-     :header (discourse-topic--header state)
-     :footer (discourse-topic--footer state)
-     :force-keys
-     (if geometry-p
-         (mapcar #'appkit-projection-row-key rows)
-       entry-keys)
-     :changed-dependencies resources
-     :position (discourse-topic--position-intent events)
-     :reconcile-p reconcile-p)
-    (appkit-view-acknowledge-events view event-count)
+(defun discourse-topic--sync (view invalidations events)
+  "Synchronize topic VIEW from coalesced INVALIDATIONS and EVENTS."
+  (let ((state (discourse-topic--state view)))
+    (appkit-projection-sync-invalidations
+        view invalidations (discourse-topic--project state)
+      :reconcile-parts '(entries)
+      :header (discourse-topic--header state)
+      :footer (discourse-topic--footer state)
+      :position (discourse-topic--position-intent events))
     (force-mode-line-update t)
     (when (and (discourse-topic-state-loaded-p state)
                (appkit-scroll-observer-p discourse-topic--scroll-observer))

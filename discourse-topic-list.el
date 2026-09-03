@@ -443,32 +443,18 @@ preformatted relative timestamp."
                when position return position)
       'preserve))
 
-(defun discourse-topic-list--sync (view invalidations)
-  "Synchronize topic-list VIEW from INVALIDATIONS."
+(defun discourse-topic-list--sync (view invalidations events)
+  "Synchronize topic-list VIEW from INVALIDATIONS and EVENTS."
   (let* ((state (discourse-topic-list--state view))
-         (events (appkit-view-pending-events-snapshot view))
-         (event-count (length events))
-         (parts (appkit-invalidations-parts invalidations))
-         (entry-keys (appkit-invalidations-entry-keys invalidations))
-         (metadata-p (memq 'metadata parts))
-         (resources (appkit-invalidations-resource-keys invalidations))
-         (reconcile-p
-          (or metadata-p
-              (appkit-invalidations-structure-p invalidations)
-              (memq 'entries parts)
-              entry-keys resources))
-         (rows (and reconcile-p (discourse-topic-list--project state))))
-    (appkit-projection-sync
-     view rows
-     :header ""
-     :footer (discourse-topic-list--footer state)
-     :force-keys (if metadata-p
-                     (mapcar #'appkit-projection-row-key rows)
-                   entry-keys)
-     :changed-dependencies resources
-     :position (discourse-topic-list--position-intent events)
-     :reconcile-p reconcile-p)
-    (appkit-view-acknowledge-events view event-count)
+         (metadata-p
+          (memq 'metadata (appkit-invalidations-parts invalidations))))
+    (appkit-projection-sync-invalidations
+        view invalidations (discourse-topic-list--project state)
+      :reconcile-parts '(entries metadata)
+      :force-keys (and metadata-p (appkit-projection-keys view))
+      :header ""
+      :footer (discourse-topic-list--footer state)
+      :position (discourse-topic-list--position-intent events))
     (force-mode-line-update t)
     (when (and (discourse-topic-list-state-loaded-p state)
                (appkit-scroll-observer-p
