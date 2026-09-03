@@ -214,9 +214,22 @@
       (when (file-exists-p cipher-file)
         (delete-file cipher-file)))))
 
+(defun discourse-auth--source-host (origin)
+  "Return the auth-source machine name for normalized ORIGIN.
+HTTPS is the only supported scheme, so the host (plus a non-default port)
+identifies the origin without putting a URL in the netrc machine field."
+  (let* ((normalized (discourse-runtime-normalize-origin origin))
+         (parsed (url-generic-parse-url normalized))
+         (host (url-host parsed))
+         (port (url-port parsed)))
+    (concat host
+            (if (= port 443) "" (format ":%d" port)))))
+
 (defun discourse-auth--source-spec (origin username)
-  "Return auth-source identity spec for ORIGIN and USERNAME."
-  (list :host origin :user username :port discourse-auth--source-port))
+  "Return canonical auth-source identity spec for ORIGIN and USERNAME."
+  (list :host (discourse-auth--source-host origin)
+        :user username
+        :port discourse-auth--source-port))
 
 (defun discourse-auth--token-value (token key)
   "Return TOKEN's scalar KEY value without text properties."
@@ -229,7 +242,7 @@
          (apply
           #'auth-source-search
           (append
-           (list :host origin
+           (list :host (discourse-auth--source-host origin)
                  :port discourse-auth--source-port
                  :max 100
                  :require '(:secret :client-id :user-id))
