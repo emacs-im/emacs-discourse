@@ -13,6 +13,10 @@
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-open-topic
                   "discourse-topic-list" ())
+(declare-function discourse-topic-list-compose-topic
+                  "discourse-topic-list" ())
+(declare-function discourse-topic-list-can-create-topic-p
+                  "discourse-topic-list" ())
 (declare-function discourse-topic-list-previous
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-refresh
@@ -21,6 +25,8 @@
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-retry-available-p
                   "discourse-topic-list" ())
+(declare-function discourse-topic-compose-reply "discourse-topic" ())
+(declare-function discourse-topic-can-reply-p "discourse-topic" ())
 (declare-function discourse-topic-refresh "discourse-topic" ())
 (declare-function discourse-topic-open-latest "discourse-topic" ())
 (declare-function discourse-topic-jump-back "discourse-topic" ())
@@ -37,6 +43,9 @@
     ("o" "Open topic" discourse-topic-list-open-topic)
     ("n" "Next topic" discourse-topic-list-next :transient t)
     ("p" "Previous topic" discourse-topic-list-previous :transient t)]
+   ["Write"
+    ("c" "Create topic" discourse-topic-list-compose-topic
+     :if discourse-topic-list-can-create-topic-p)]
    ["Network"
     ("g" "Refresh" discourse-topic-list-refresh)
     ("R" "Retry failed request" discourse-topic-list-retry
@@ -50,6 +59,9 @@
     ("l" "Previous anchor" discourse-topic-jump-back)
     ("n" "Next post" appkit-discussion-next-entry :transient t)
     ("p" "Previous post" appkit-discussion-previous-entry :transient t)]
+   ["Write"
+    ("r" "Reply at point" discourse-topic-compose-reply
+     :if discourse-topic-can-reply-p)]
    ["Network"
     ("g" "Refresh" discourse-topic-refresh)
     ("R" "Retry failed request" discourse-topic-retry

@@ -270,6 +270,75 @@
       (when (discourse-account-p account)
         (discourse-runtime-stop-account account)))))
 
+
+(ert-deftest discourse-topic-reply-action-captures-post-target-and-capability ()
+  (let* ((account
+          (discourse-runtime-create-authenticated-account
+           "https://example.test" "7" "writer" "client-7"))
+         (domain-state (discourse-account-state account))
+         (details
+          (discourse-topic-test--object "can_create_post" t))
+         (topic
+          (discourse-topic-test--object
+           "id" 42 "title" "Writable topic" "details" details))
+         (post
+          (discourse-topic-test--object
+           "id" 91
+           "topic_id" 42
+           "post_number" 4
+           "user_id" 8
+           "username" "alice"
+           "created_at" "2026-09-02T08:00:00Z"
+           "cooked" "<p>Reply body</p>"
+           "actions_summary" []))
+         buffer
+         composed)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'discourse-topic--request)
+              (lambda (&rest _arguments) nil))
+             ((symbol-function 'discourse-site-ensure-metadata)
+              (lambda (&rest _arguments) nil))
+             ((symbol-function 'discourse-compose-reply)
+              (lambda (sent-account topic-id &rest options)
+                (setq composed (list sent-account topic-id options))
+                'compose-buffer)))
+          (setq buffer (discourse-topic-open account "42" nil))
+          (discourse-state-merge-topic domain-state topic)
+          (discourse-topic--observe-post-author domain-state post)
+          (discourse-state-merge-post domain-state post)
+          (with-current-buffer buffer
+            (let* ((view (appkit-current-view))
+                   (state (appkit-view-state view)))
+              (setf (discourse-topic-state-stream state) '("91")
+                    (discourse-topic-state-phase state) 'ready
+                    (discourse-topic-state-loaded-p state) t
+                    (discourse-topic-state-exhausted-p state) t)
+              (puthash "91" t (discourse-topic-state-loaded-ids state))
+              (appkit-invalidate
+               view :structure t :parts '(frame entries))
+              (appkit-sync-invalidations view)
+              (goto-char (point-min))
+              (search-forward "Reply body")
+              (should (discourse-topic-can-reply-p))
+              (should
+               (string-match-p
+                "@writer"
+                (substring-no-properties
+                 (discourse-topic--header-line))))
+              (discourse-topic-compose-reply)
+              (should (eq account (car composed)))
+              (should (equal "42" (cadr composed)))
+              (let ((options (nth 2 composed)))
+                (should (= 4
+                           (plist-get options
+                                      :reply-to-post-number)))
+                (should (equal "alice"
+                               (plist-get options
+                                          :reply-to-username)))
+                (should (eq view
+                            (plist-get options :source-view)))))))
+      (discourse-runtime-stop-account account))))
 (provide 'discourse-topic-test)
 
 ;;; discourse-topic-test.el ends here

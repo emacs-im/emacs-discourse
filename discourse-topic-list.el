@@ -2,8 +2,8 @@
 
 ;;; Commentary:
 
-;; Stable-key Appkit projection for anonymous Latest pages and the server-owned
-;; `more_topics_url' cursor.
+;; Stable-key Appkit projection for authenticated or anonymous Latest pages
+;; and the server-owned `more_topics_url' cursor.
 
 ;;; Code:
 
@@ -19,6 +19,7 @@
 (require 'appkit-ui)
 (require 'appkit-view)
 (require 'discourse-api)
+(require 'discourse-compose)
 (require 'discourse-customize)
 (require 'discourse-media)
 (require 'discourse-runtime)
@@ -62,6 +63,7 @@
   account
   topics
   more-url
+  can-create-topic-p
   phase
   message
   request-token
@@ -395,9 +397,12 @@ preformatted relative timestamp."
          " "
          (propertize title 'face 'bold)
          (propertize
-          (format " · Latest · anonymous · %s · ? actions " status)
+          (format " · Latest · %s · %s · ? actions "
+                  (discourse-account-display-identity
+                   (discourse-topic-list-state-account state))
+                  status)
           'face 'shadow)))
-    (error " Discourse · Latest · anonymous ")))
+    (error " Discourse · Latest ")))
 
 (defun discourse-topic-list--footer (state)
   "Return generated footer for topic-list STATE."
@@ -541,9 +546,14 @@ ENDPOINT is retained only if response validation fails."
             (discourse-state-merge-user domain-state user))
           (dolist (topic topics)
             (discourse-state-merge-topic domain-state topic))
+          (discourse-state-set-can-create-topic
+           domain-state
+           (discourse-topic-page-can-create-topic-p page))
           (setf (discourse-topic-list-state-topics state) installed
                 (discourse-topic-list-state-more-url state)
                 (discourse-topic-page-more-url page)
+                (discourse-topic-list-state-can-create-topic-p state)
+                (discourse-topic-page-can-create-topic-p page)
                 (discourse-topic-list-state-phase state) 'ready
                 (discourse-topic-list-state-message state) nil
                 (discourse-topic-list-state-request-token state) nil
@@ -765,6 +775,29 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
         (goto-char (car (last candidates)))
       (user-error "No earlier Discourse topic"))))
 
+(defun discourse-topic-list-can-create-topic-p ()
+  "Return non-nil when the server permits creating a topic here."
+  (condition-case nil
+      (let ((state (discourse-topic-list--state)))
+        (and (discourse-topic-list-state-loaded-p state)
+             (discourse-topic-list-state-can-create-topic-p state)
+             (discourse-compose-new-topic-allowed-p
+              (discourse-topic-list-state-account state))))
+    (error nil)))
+
+(defun discourse-topic-list-compose-topic ()
+  "Open a new-topic composer for the current authenticated account."
+  (interactive)
+  (let* ((view (or (appkit-current-view)
+                   (user-error "No live Discourse topic list")))
+         (state (discourse-topic-list--state view)))
+    (unless (discourse-topic-list-can-create-topic-p)
+      (user-error "The server does not currently allow topic creation"))
+    (discourse-compose-new-topic
+     (discourse-topic-list-state-account state)
+     :source-view view
+     :select t)))
+
 (defun discourse-topic-list-open-topic ()
   "Open the Discourse topic at point."
   (interactive)
@@ -781,6 +814,7 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
 (defvar-keymap discourse-topic-list-mode-map
   :parent special-mode-map
   "g" #'discourse-topic-list-refresh
+  "c" #'discourse-topic-list-compose-topic
   "n" #'discourse-topic-list-next
   "R" #'discourse-topic-list-retry
   "p" #'discourse-topic-list-previous

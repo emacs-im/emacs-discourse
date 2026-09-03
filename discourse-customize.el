@@ -16,6 +16,17 @@
   :type 'string
   :group 'discourse)
 
+(defcustom discourse-auth-directory
+  (locate-user-emacs-file "discourse/auth/")
+  "Directory holding per-origin RSA client keys for User API Key authorization."
+  :type 'directory
+  :group 'discourse)
+
+(defcustom discourse-auth-application-name "Emacs Discourse"
+  "Application name shown by Discourse during User API Key authorization."
+  :type 'string
+  :group 'discourse)
+
 (defcustom discourse-http-timeout 30
   "Maximum seconds for one ordinary Discourse HTTP attempt."
   :type 'number

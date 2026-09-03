@@ -2,8 +2,8 @@
 
 ;;; Commentary:
 
-;; Anonymous JSON reads with lifecycle cancellation, bounded 429 Retry-After
-;; handling, response limits, and one typed completion path.
+;; Authenticated or anonymous JSON requests with lifecycle cancellation,
+;; read-only 429 Retry-After handling, response limits, and one typed result.
 
 ;;; Code:
 
@@ -14,6 +14,7 @@
 (require 'url-util)
 (require 'plz)
 (require 'appkit-core)
+(require 'discourse-auth)
 (require 'discourse-customize)
 (require 'discourse-runtime)
 
@@ -42,8 +43,11 @@
                (:copier nil))
   account
   owner
+  method
   endpoint
   parameters
+  body
+  retryable-p
   attempt
   process
   timer
@@ -264,7 +268,8 @@
            (retry-after (and response
                              (= status 429)
                              (discourse-http--retry-after response))))
-      (if (and retry-after
+      (if (and (discourse-http-request-retryable-p request)
+               retry-after
                (< (discourse-http-request-attempt request)
                   discourse-read-retry-limit))
           (progn
@@ -288,6 +293,17 @@
             retry-after
             headers)))))))
 
+(defun discourse-http--headers (account body)
+  "Return request headers for ACCOUNT and optional JSON BODY."
+  (append
+   `(("Accept" . "application/json")
+     ("User-Agent" . ,discourse-http-user-agent))
+   (when body
+     '(("Content-Type" . "application/json; charset=utf-8")))
+   (when (discourse-account-authenticated-p account)
+     `(("User-Api-Key" . ,(discourse-auth-api-key account))
+       ("User-Api-Client-Id" . ,(discourse-account-client-id account))))))
+
 (defun discourse-http--dispatch (request)
   "Dispatch one attempt for current REQUEST."
   (when (discourse-http--request-current-p request)
@@ -297,13 +313,15 @@
              account
              (discourse-http-request-endpoint request)
              (discourse-http-request-parameters request)))
+           (method (discourse-http-request-method request))
+           (body (discourse-http-request-body request))
            ;; Following redirects could silently cross the configured origin.
            (plz-curl-default-args
             (remove "--location" plz-curl-default-args))
            (process
-            (plz 'get url
-              :headers `(("Accept" . "application/json")
-                         ("User-Agent" . ,discourse-http-user-agent))
+            (plz method url
+              :headers (discourse-http--headers account body)
+              :body body
               :body-type 'text
               :as 'response
               :timeout discourse-http-timeout
@@ -318,24 +336,30 @@
         (when (and (processp process) (process-live-p process))
           (delete-process process))))))
 
-(cl-defun discourse-http-get
-    (account endpoint callback &key parameters owner)
-  "Issue an anonymous JSON GET for ACCOUNT ENDPOINT.
-
-CALLBACK receives one `discourse-http-result'.  OWNER defaults to ACCOUNT's
-Appkit application and owns process/timer cancellation."
+(cl-defun discourse-http--request
+    (account method endpoint callback
+             &key parameters body owner retryable-p)
+  "Issue one JSON request for ACCOUNT METHOD and ENDPOINT."
   (unless (and (discourse-account-p account)
                (appkit-app-live-p (discourse-account-app account)))
     (error "Cannot request through a dead Discourse account"))
+  (unless (memq method '(get post put patch delete))
+    (error "Unsupported Discourse HTTP method: %S" method))
   (unless (functionp callback)
     (error "Discourse HTTP callback must be callable"))
+  (when (and body
+             (> (string-bytes body) discourse-http-response-byte-limit))
+    (error "Discourse request exceeds configured byte limit"))
   (let* ((effective-owner (or owner (discourse-account-app account)))
          (request
           (discourse-http-request--create
            :account account
            :owner effective-owner
+           :method method
            :endpoint endpoint
            :parameters (copy-tree parameters)
+           :body (and body (copy-sequence body))
+           :retryable-p retryable-p
            :attempt 0
            :callback callback
            :active-p t))
@@ -346,12 +370,36 @@ Appkit application and owns process/timer cancellation."
     (setf (discourse-http-request-handle request) handle)
     (condition-case error-data
         (discourse-http--dispatch request)
+      (discourse-auth-credential-error
+       (discourse-http--emit
+        request
+        (discourse-http--failure-result
+         'credential 0 (error-message-string error-data))))
       (error
        (discourse-http--emit
         request
         (discourse-http--failure-result
          'transport 0 (error-message-string error-data)))))
     request))
+
+(cl-defun discourse-http-get
+    (account endpoint callback &key parameters owner)
+  "Issue an idempotent JSON GET for ACCOUNT ENDPOINT."
+  (discourse-http--request
+   account 'get endpoint callback
+   :parameters parameters :owner owner :retryable-p t))
+
+(cl-defun discourse-http-post-json
+    (account endpoint data callback &key parameters owner)
+  "Issue one non-retrying authenticated JSON POST of DATA to ENDPOINT."
+  (unless (discourse-account-authenticated-p account)
+    (error "Discourse writes require a User API Key account"))
+  (discourse-http--request
+   account 'post endpoint callback
+   :parameters parameters
+   :body (json-serialize data :null-object nil :false-object :json-false)
+   :owner owner
+   :retryable-p nil))
 
 (defun discourse-http-cancel (request)
   "Cancel live Discourse HTTP REQUEST without publishing a result."

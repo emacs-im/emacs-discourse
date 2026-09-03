@@ -13,6 +13,8 @@
 
 (declare-function discourse-topic-list-next
                   "discourse-topic-list" ())
+(declare-function discourse-topic-list-compose-topic
+                  "discourse-topic-list" ())
 (declare-function discourse-topic-list-open-topic
                   "discourse-topic-list" ())
 (declare-function discourse-topic-list-previous
@@ -23,6 +25,10 @@
                   "discourse-transient" ())
 (declare-function discourse-topic-list-retry
                   "discourse-topic-list" ())
+(declare-function discourse-compose-submit "discourse-compose" ())
+(declare-function discourse-compose-cancel "discourse-compose" ())
+(declare-function discourse-compose-preview "discourse-compose" ())
+(declare-function discourse-topic-compose-reply "discourse-topic" ())
 (declare-function discourse-topic-refresh "discourse-topic" ())
 (declare-function discourse-topic-open-latest "discourse-topic" ())
 (declare-function discourse-topic-jump-back "discourse-topic" ())
@@ -30,6 +36,7 @@
 (declare-function discourse-topic-transient "discourse-transient" ())
 (declare-function appkit-discussion-next-entry "appkit-discussion" ())
 (declare-function appkit-discussion-previous-entry "appkit-discussion" ())
+(defvar discourse-compose-mode-map)
 
 (defgroup discourse-evil nil
   "Optional native Evil integration for discourse.el."
@@ -67,7 +74,11 @@ When nil, leave Evil's initial-state selection untouched."
      "g R" #'discourse-topic-list-retry
      "g j" #'discourse-topic-list-next
      "g k" #'discourse-topic-list-previous
-     "?" #'discourse-topic-list-transient)))
+     "?" #'discourse-topic-list-transient))
+  (appkit-evil-map
+    (:map discourse-topic-list-mode-map
+     :nm
+     "g c" #'discourse-topic-list-compose-topic)))
 
 (defun discourse-evil--define-topic-keys ()
   "Install modal bindings for Discourse topic streams."
@@ -81,7 +92,20 @@ When nil, leave Evil's initial-state selection untouched."
      "g j" #'appkit-discussion-next-entry
      "g l" #'discourse-topic-jump-back
      "g k" #'appkit-discussion-previous-entry
-     "?" #'discourse-topic-transient)))
+     "?" #'discourse-topic-transient))
+  (appkit-evil-map
+    (:map discourse-topic-mode-map
+     :nm
+     "g c" #'discourse-topic-compose-reply)))
+
+(defun discourse-evil--define-compose-keys ()
+  "Install modal bindings for editable Discourse compose buffers."
+  (appkit-evil-map
+    (:map discourse-compose-mode-map
+     :nmi
+     "C-c C-c" #'discourse-compose-submit
+     "C-c C-k" #'discourse-compose-cancel
+     "C-c C-p" #'discourse-compose-preview)))
 
 ;;;###autoload
 (defun discourse-evil-setup ()
@@ -91,10 +115,14 @@ Safe to call multiple times and before Evil is loaded."
   (when discourse-evil-enable-integration
     (discourse-evil--define-topic-list-keys)
     (discourse-evil--define-topic-keys)
+    (discourse-evil--define-compose-keys)
     (when (featurep 'evil)
       (appkit-evil-set-initial-states
        discourse-evil--application-modes discourse-evil-initial-state)
-      (appkit-evil-normalize-buffers discourse-evil--application-modes))))
+      (appkit-evil-set-initial-states '(discourse-compose-mode) 'insert)
+      (appkit-evil-normalize-buffers
+       (append discourse-evil--application-modes
+               '(discourse-compose-mode))))))
 
 (discourse-evil-setup)
 

@@ -14,6 +14,9 @@
 (depends-on "emacs" "32.0")
 (depends-on "plz" "0.8")
 (depends-on "transient" "0.7")
+(depends-on "browser-session" :file
+            (expand-file-name "../browser-session/browser-session.el"
+                              (file-truename default-directory)))
 (depends-on "video" :file
             (expand-file-name "../video.el"
                               (file-truename default-directory)))
@@ -28,4 +31,4 @@
         "(cd ../appkit.el && eask -f install-file ../video.el) && eask -f install-file ../appkit.el")
 (script "test" "eask test ert test/*.el --quiet")
 (script "test-local"
-        "(cd ../appkit.el && eask -f install-file ../video.el) && eask -f install-file ../appkit.el && eask recompile && eask test ert test/*.el --quiet")
+        "eask -f install-file ../browser-session/browser-session.el && (cd ../appkit.el && eask -f install-file ../video.el) && eask -f install-file ../appkit.el && eask recompile && eask test ert test/*.el --quiet")

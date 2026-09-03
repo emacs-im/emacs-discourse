@@ -26,6 +26,7 @@
 (require 'appkit-ui)
 (require 'appkit-view)
 (require 'discourse-api)
+(require 'discourse-compose)
 (require 'discourse-customize)
 (require 'discourse-markup)
 (require 'discourse-media)
@@ -602,10 +603,13 @@
          " "
          (propertize (discourse-topic--site-title state) 'face 'bold)
          (propertize
-          (format " · t/%s · anonymous · %s · b Latest · ? actions "
-                  (discourse-topic-state-topic-id state) phase)
+          (format " · t/%s · %s · %s · b Latest · ? actions "
+                  (discourse-topic-state-topic-id state)
+                  (discourse-account-display-identity
+                   (discourse-topic-state-account state))
+                  phase)
           'face 'shadow)))
-    (error " Discourse · Topic · anonymous ")))
+    (error " Discourse · Topic ")))
 
 (defun discourse-topic--footer (state)
   "Return generated footer for topic STATE."
@@ -1042,6 +1046,55 @@ RETRY-POST-IDS, when non-nil, is the exact failed post page to replay."
                (appkit-view-request-table view)))
     request))
 
+(defun discourse-topic-can-reply-p ()
+  "Return non-nil when the server permits replying to the current topic."
+  (condition-case nil
+      (let ((state (discourse-topic--state)))
+        (discourse-compose-reply-allowed-p
+         (discourse-topic-state-account state)
+         (discourse-topic-state-topic-id state)))
+    (error nil)))
+
+(defun discourse-topic--post-at-point (state)
+  "Return STATE's canonical post represented at point, or nil."
+  (let ((post-id
+         (or (get-text-property (point) discourse-topic-post-id-property)
+             (and (> (point) (point-min))
+                  (get-text-property
+                   (1- (point)) discourse-topic-post-id-property)))))
+    (and post-id (discourse-topic--canonical-post state post-id))))
+
+(defun discourse-topic-compose-reply (&optional topic-level-p)
+  "Compose a reply to the post at point.
+With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
+  (interactive "P")
+  (let* ((view (or (appkit-current-view)
+                   (user-error "No live Discourse topic")))
+         (state (discourse-topic--state view))
+         (post (and (not topic-level-p)
+                    (discourse-topic--post-at-point state)))
+         (post-number
+          (and post (discourse-topic--field post "post_number")))
+         (username (and post (discourse-topic--sender-name post))))
+    (discourse-compose-reply
+     (discourse-topic-state-account state)
+     (discourse-topic-state-topic-id state)
+     :source-view view
+     :reply-to-post-number
+     (and (integerp post-number) post-number)
+     :reply-to-username username
+     :select t)))
+
+(defun discourse-topic-refresh-to-post-number (post-number)
+  "Refresh the current topic and focus accepted POST-NUMBER."
+  (unless (and (integerp post-number) (> post-number 0))
+    (error "Discourse accepted an invalid post number"))
+  (let* ((view (or (appkit-current-view)
+                   (user-error "No live Discourse topic")))
+         (state (discourse-topic--state view)))
+    (setf (discourse-topic-state-target-post-number state) post-number)
+    (discourse-topic--request view 'refresh)))
+
 (defun discourse-topic-refresh ()
   "Refresh the current Discourse topic snapshot."
   (interactive)
@@ -1088,6 +1141,7 @@ RETRY-POST-IDS, when non-nil, is the exact failed post page to replay."
   "g" #'discourse-topic-refresh
   "n" #'appkit-discussion-next-entry
   "R" #'discourse-topic-retry
+  "r" #'discourse-topic-compose-reply
   "b" #'discourse-topic-open-latest
   "l" #'discourse-topic-jump-back
   "p" #'appkit-discussion-previous-entry

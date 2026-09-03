@@ -234,6 +234,67 @@
       (when (discourse-account-p account)
         (discourse-runtime-stop-account account)))))
 
+
+(ert-deftest discourse-topic-list-exposes-create-only-from-server-capability ()
+  (let* ((account
+          (discourse-runtime-create-authenticated-account
+           "https://example.test" "7" "alice" "client-7"))
+         (category
+          (discourse-topic-list-test--object
+           "id" 5 "name" "General" "permission" 1))
+         (page
+          (discourse-topic-page-create
+           :topics nil :users nil :more-url nil
+           :can-create-topic-p t))
+         buffer
+         composed)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'discourse-api-topic-page)
+              (lambda (_account callback &rest _arguments)
+                (funcall callback
+                         (discourse-http-result-create
+                          :ok-p t :data page))
+                nil))
+             ((symbol-function 'discourse-api-site-categories)
+              (lambda (_account callback &rest _arguments)
+                (funcall callback
+                         (discourse-http-result-create
+                          :ok-p t :data (list category)))
+                nil))
+             ((symbol-function 'discourse-api-site-profile)
+              (lambda (_account callback &rest _arguments)
+                (funcall
+                 callback
+                 (discourse-http-result-create
+                  :ok-p t
+                  :data
+                  (discourse-topic-list-test--object
+                   "title" "Example Forum")))
+                nil))
+             ((symbol-function 'discourse-compose-new-topic)
+              (lambda (sent-account &rest options)
+                (setq composed (cons sent-account options))
+                'compose-buffer)))
+          (setq buffer
+                (discourse-topic-list-open-latest account nil))
+          (with-current-buffer buffer
+            (appkit-sync-invalidations (appkit-current-view))
+            (should (discourse-topic-list-can-create-topic-p))
+            (should
+             (string-match-p
+              "@alice"
+              (substring-no-properties
+               (discourse-topic-list--header-line))))
+            (should
+             (eq #'discourse-topic-list-compose-topic
+                 (lookup-key discourse-topic-list-mode-map (kbd "c"))))
+            (discourse-topic-list-compose-topic)
+            (should (eq account (car composed)))
+            (should
+             (eq (appkit-current-view)
+                 (plist-get (cdr composed) :source-view)))))
+      (discourse-runtime-stop-account account))))
 (provide 'discourse-topic-list-test)
 
 ;;; discourse-topic-list-test.el ends here

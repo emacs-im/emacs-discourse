@@ -19,7 +19,9 @@
   users
   categories
   categories-loaded-p
-  site-profile)
+  site-profile
+  can-create-topic-known-p
+  can-create-topic-p)
 
 (defun discourse-state-create ()
   "Return fresh canonical Discourse state."
@@ -125,6 +127,15 @@
   (setf (discourse-state-site-profile state) (copy-hash-table profile))
   (cl-incf (discourse-state-revision state))
   (discourse-state-site-profile state))
+
+(defun discourse-state-set-can-create-topic (state allowed-p)
+  "Record whether the server allows topic creation in STATE."
+  (unless (discourse-state-p state)
+    (error "Invalid Discourse state"))
+  (setf (discourse-state-can-create-topic-known-p state) t
+        (discourse-state-can-create-topic-p state) (and allowed-p t))
+  (cl-incf (discourse-state-revision state))
+  (discourse-state-can-create-topic-p state))
 
 (defun discourse-state-topic (state topic-id)
   "Return STATE's canonical TOPIC-ID observation, or nil."
