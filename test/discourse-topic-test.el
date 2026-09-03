@@ -58,7 +58,8 @@
 (ert-deftest discourse-topic-pages-from-scroll-and-retries-exact-batch ()
   (let ((account (discourse-runtime-create-account "https://example.test"))
         buffer
-        calls)
+        calls
+        owners)
     (unwind-protect
         (progn
           (cl-letf (((symbol-function 'discourse-topic--request)
@@ -82,8 +83,9 @@
               (cl-letf
                   (((symbol-function 'discourse-api-topic-posts)
                     (lambda (_account _topic-id post-ids callback
-                                      &rest _arguments)
+                                      &rest options)
                       (push (copy-sequence post-ids) calls)
+                      (push (plist-get options :owner) owners)
                       (funcall callback failure)
                       nil)))
                 (discourse-topic--maybe-auto-load
@@ -95,6 +97,9 @@
                 (discourse-topic-retry))
               (should (equal '(("91" "92") ("91" "92"))
                              (nreverse calls)))
+              (dolist (operation owners)
+                (should (appkit-view-operation-p operation))
+                (should (eq view (appkit-view-operation-view operation))))
               (should-not (lookup-key discourse-topic-mode-map (kbd "N")))
               (should
                (eq (lookup-key discourse-topic-mode-map (kbd "R"))

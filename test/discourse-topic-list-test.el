@@ -295,6 +295,57 @@
              (eq (appkit-current-view)
                  (plist-get (cdr composed) :source-view)))))
       (discourse-runtime-stop-account account))))
+(ert-deftest discourse-topic-list-operation-owns-and-replaces-transport ()
+  (let ((account (discourse-runtime-create-account "https://example.test"))
+        requests
+        cancelled
+        buffer)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'message) #'ignore)
+             ((symbol-function
+               'discourse-topic-list--request-site-metadata)
+              #'ignore)
+             ((symbol-function 'discourse-api-topic-page)
+              (lambda (_account callback &rest options)
+                (let* ((owner (plist-get options :owner))
+                       (request (make-symbol "discourse-request-")))
+                  (appkit-register-handle
+                   owner 'function request
+                   (lambda (active) (push active cancelled)))
+                  (push (list request callback owner) requests)
+                  request))))
+          (setq buffer (discourse-topic-list-open-latest account nil))
+          (with-current-buffer buffer
+            (let* ((view (appkit-current-view))
+                   (state (appkit-view-state view))
+                   (first (car requests))
+                   (first-operation (nth 2 first)))
+              (should (appkit-view-operation-p first-operation))
+              (should
+               (eq first-operation
+                   (gethash discourse-topic-list--request-key
+                            (appkit-view-request-table view))))
+              (discourse-topic-list-refresh)
+              (let ((second (car requests)))
+                (should-not (eq first second))
+                (should (memq (car first) cancelled))
+                (funcall
+                 (nth 1 first)
+                 (discourse-http-result-create
+                  :ok-p t
+                  :data
+                  (discourse-topic-page-create
+                   :topics nil :users nil :more-url nil)))
+                (should-not (discourse-topic-list-state-loaded-p state))
+                (appkit-view-operation-cancel-all view)
+                (should (memq (car second) cancelled))
+                (should
+                 (zerop
+                  (hash-table-count
+                   (appkit-view-request-table view))))))))
+      (discourse-runtime-stop-account account))))
+
 (provide 'discourse-topic-list-test)
 
 ;;; discourse-topic-list-test.el ends here

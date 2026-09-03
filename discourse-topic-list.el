@@ -66,7 +66,6 @@
   can-create-topic-p
   phase
   message
-  request-token
   loaded-p
   exhausted-p
   retry-phase
@@ -477,17 +476,6 @@ preformatted relative timestamp."
       (appkit-scroll-observer-check
        discourse-topic-list--scroll-observer))))
 
-(defun discourse-topic-list--request-current-p (view state token)
-  "Return non-nil when TOKEN may update STATE in VIEW."
-  (and (appkit-view-live-p view)
-       (eq state (appkit-view-state view))
-       (eq token (discourse-topic-list-state-request-token state))))
-
-(defun discourse-topic-list--retire-request (view state token)
-  "Retire VIEW's request table entry owned by TOKEN."
-  (when (discourse-topic-list--request-current-p view state token)
-    (remhash discourse-topic-list--request-key
-             (appkit-view-request-table view))))
 
 (defun discourse-topic-list--failure-message (result)
   "Return presentation message for failed HTTP RESULT."
@@ -497,18 +485,16 @@ preformatted relative timestamp."
       "Unknown Discourse response failure")))
 
 (defun discourse-topic-list--handle-error
-    (view state token phase endpoint result)
-  "Install failed RESULT and retry identity for TOKEN in VIEW STATE."
-  (when (discourse-topic-list--request-current-p view state token)
-    (setf (discourse-topic-list-state-phase state) 'error
-          (discourse-topic-list-state-message state)
-          (discourse-topic-list--failure-message result)
-          (discourse-topic-list-state-request-token state) nil
-          (discourse-topic-list-state-retry-phase state) phase
-          (discourse-topic-list-state-retry-endpoint state) endpoint)
-    (appkit-request-sync view :part 'frame :position t)
-    (unless (eq phase 'older)
-      (message "%s" (discourse-topic-list-state-message state)))))
+    (view state phase endpoint result)
+  "Install failed RESULT for PHASE and ENDPOINT in VIEW STATE."
+  (setf (discourse-topic-list-state-phase state) 'error
+        (discourse-topic-list-state-message state)
+        (discourse-topic-list--failure-message result)
+        (discourse-topic-list-state-retry-phase state) phase
+        (discourse-topic-list-state-retry-endpoint state) endpoint)
+  (appkit-request-sync view :part 'frame :position t)
+  (unless (eq phase 'older)
+    (message "%s" (discourse-topic-list-state-message state))))
 
 (defun discourse-topic-list--new-topics (current candidates)
   "Return CANDIDATES whose IDs are absent from CURRENT."
@@ -522,61 +508,59 @@ preformatted relative timestamp."
           (push topic result))))))
 
 (defun discourse-topic-list--handle-success
-    (view state token phase endpoint page)
+    (view state phase endpoint page)
   "Install validated PAGE into VIEW STATE for PHASE.
 ENDPOINT is retained only if response validation fails."
-  (when (discourse-topic-list--request-current-p view state token)
-    (condition-case error-data
-        (let* ((topics (discourse-topic-page-topics page))
-               (users (discourse-topic-page-users page))
-               (domain-state
-                (discourse-account-state
-                 (discourse-topic-list-state-account state)))
-               (current (discourse-topic-list-state-topics state))
-               (installed
-                (pcase phase
-                  ((or 'initial 'refresh)
-                   (append topics
-                           (discourse-topic-list--new-topics topics current)))
-                  ('older
-                   (append current
-                           (discourse-topic-list--new-topics current topics)))
-                  (_ (error "Invalid topic request phase")))))
-          (dolist (user users)
-            (discourse-state-merge-user domain-state user))
-          (dolist (topic topics)
-            (discourse-state-merge-topic domain-state topic))
-          (discourse-state-set-can-create-topic
-           domain-state
-           (discourse-topic-page-can-create-topic-p page))
-          (setf (discourse-topic-list-state-topics state) installed
-                (discourse-topic-list-state-more-url state)
-                (discourse-topic-page-more-url page)
-                (discourse-topic-list-state-can-create-topic-p state)
-                (discourse-topic-page-can-create-topic-p page)
-                (discourse-topic-list-state-phase state) 'ready
-                (discourse-topic-list-state-message state) nil
-                (discourse-topic-list-state-request-token state) nil
-                (discourse-topic-list-state-retry-phase state) nil
-                (discourse-topic-list-state-retry-endpoint state) nil
-                (discourse-topic-list-state-loaded-p state) t
-                (discourse-topic-list-state-exhausted-p state)
-                (null (discourse-topic-page-more-url page)))
-          (appkit-view-enqueue-event
-           view (list :position (if (eq phase 'initial) 'first 'preserve)))
-          (appkit-request-sync view :structure t :part 'frame :position t)
-          (unless (eq phase 'older)
-            (message "Loaded %d Discourse topics" (length topics))))
-      (error
-       (let ((result
-              (discourse-http-result-create
-               :ok-p nil
-               :failure
-               (discourse-http-failure-create
-                :kind 'invalid-response
-                :message (error-message-string error-data)))))
-         (discourse-topic-list--handle-error
-          view state token phase endpoint result))))))
+  (condition-case error-data
+      (let* ((topics (discourse-topic-page-topics page))
+             (users (discourse-topic-page-users page))
+             (domain-state
+              (discourse-account-state
+               (discourse-topic-list-state-account state)))
+             (current (discourse-topic-list-state-topics state))
+             (installed
+              (pcase phase
+                ((or 'initial 'refresh)
+                 (append topics
+                         (discourse-topic-list--new-topics topics current)))
+                ('older
+                 (append current
+                         (discourse-topic-list--new-topics current topics)))
+                (_ (error "Invalid topic request phase")))))
+        (dolist (user users)
+          (discourse-state-merge-user domain-state user))
+        (dolist (topic topics)
+          (discourse-state-merge-topic domain-state topic))
+        (discourse-state-set-can-create-topic
+         domain-state
+         (discourse-topic-page-can-create-topic-p page))
+        (setf (discourse-topic-list-state-topics state) installed
+              (discourse-topic-list-state-more-url state)
+              (discourse-topic-page-more-url page)
+              (discourse-topic-list-state-can-create-topic-p state)
+              (discourse-topic-page-can-create-topic-p page)
+              (discourse-topic-list-state-phase state) 'ready
+              (discourse-topic-list-state-message state) nil
+              (discourse-topic-list-state-retry-phase state) nil
+              (discourse-topic-list-state-retry-endpoint state) nil
+              (discourse-topic-list-state-loaded-p state) t
+              (discourse-topic-list-state-exhausted-p state)
+              (null (discourse-topic-page-more-url page)))
+        (appkit-view-enqueue-event
+         view (list :position (if (eq phase 'initial) 'first 'preserve)))
+        (appkit-request-sync view :structure t :part 'frame :position t)
+        (unless (eq phase 'older)
+          (message "Loaded %d Discourse topics" (length topics))))
+    (error
+     (let ((result
+            (discourse-http-result-create
+             :ok-p nil
+             :failure
+             (discourse-http-failure-create
+              :kind 'invalid-response
+              :message (error-message-string error-data)))))
+       (discourse-topic-list--handle-error
+        view state phase endpoint result)))))
 
 (defun discourse-topic-list--update-buffer-name (view profile)
   "Rename VIEW from validated site PROFILE."
@@ -607,22 +591,6 @@ ENDPOINT is retained only if response validation fails."
             (appkit-request-sync view :part 'frame)))))
      :owner view)))
 
-(defun discourse-topic-list--cancel-request (view)
-  "Cancel VIEW's active topic request."
-  (let* ((state (discourse-topic-list--state view))
-         (request
-          (gethash discourse-topic-list--request-key
-                   (appkit-view-request-table view))))
-    (when (discourse-topic-list-state-request-token state)
-      (setf (discourse-topic-list-state-request-token state) nil
-            (discourse-topic-list-state-phase state)
-            (if (discourse-topic-list-state-loaded-p state)
-                'ready
-              'initial)))
-    (when request
-      (remhash discourse-topic-list--request-key
-               (appkit-view-request-table view))
-      (discourse-http-cancel request))))
 
 (defun discourse-topic-list--request (view phase &optional retry-endpoint)
   "Start topic-list VIEW request for PHASE.
@@ -635,39 +603,30 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
               (if (eq phase 'older)
                   (or (discourse-topic-list-state-more-url state)
                       (user-error "No more Discourse topics"))
-                "/latest.json")))
-         (token (list phase endpoint (gensym "discourse-topics-")))
-         request callback-ran-p)
+                "/latest.json"))))
     (when (and (eq phase 'older)
                (discourse-topic-list-state-exhausted-p state))
       (user-error "No more Discourse topics"))
-    (discourse-topic-list--cancel-request view)
-    (setf (discourse-topic-list-state-request-token state) token
-          (discourse-topic-list-state-phase state) phase
-          (discourse-topic-list-state-message state) nil
-          (discourse-topic-list-state-retry-phase state) nil
-          (discourse-topic-list-state-retry-endpoint state) nil)
-    (appkit-request-sync view :part 'frame :position t)
-    (setq request
-          (discourse-api-topic-page
-           (discourse-topic-list-state-account state)
-           (lambda (result)
-             (setq callback-ran-p t)
-             (discourse-topic-list--retire-request view state token)
-             (if (discourse-http-result-ok-p result)
-                 (discourse-topic-list--handle-success
-                  view state token phase endpoint
-                  (discourse-http-result-data result))
-               (discourse-topic-list--handle-error
-                view state token phase endpoint result)))
-           :endpoint endpoint
-           :owner view))
-    (when (and request
-               (not callback-ran-p)
-               (discourse-topic-list--request-current-p view state token))
-      (puthash discourse-topic-list--request-key request
-               (appkit-view-request-table view)))
-    request))
+    (let ((operation
+           (appkit-view-operation-begin
+            view discourse-topic-list--request-key)))
+      (setf (discourse-topic-list-state-phase state) phase
+            (discourse-topic-list-state-message state) nil
+            (discourse-topic-list-state-retry-phase state) nil
+            (discourse-topic-list-state-retry-endpoint state) nil)
+      (appkit-request-sync view :part 'frame :position t)
+      (discourse-api-topic-page
+       (discourse-topic-list-state-account state)
+       (lambda (result)
+         (when (appkit-view-operation-finish operation)
+           (if (discourse-http-result-ok-p result)
+               (discourse-topic-list--handle-success
+                view state phase endpoint
+                (discourse-http-result-data result))
+             (discourse-topic-list--handle-error
+              view state phase endpoint result))))
+       :endpoint endpoint
+       :owner operation))))
 
 (defun discourse-topic-list-refresh ()
   "Refresh the current Discourse topic list."
@@ -685,8 +644,7 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
       (let ((state (discourse-topic-list--state)))
         (and (eq (discourse-topic-list-state-phase state) 'error)
              (discourse-topic-list-state-retry-phase state)
-             (discourse-topic-list-state-retry-endpoint state)
-             (null (discourse-topic-list-state-request-token state))))
+             (discourse-topic-list-state-retry-endpoint state)))
     (error nil)))
 
 (defun discourse-topic-list-retry ()
@@ -698,8 +656,7 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
          (phase (discourse-topic-list-state-retry-phase state))
          (endpoint (discourse-topic-list-state-retry-endpoint state)))
     (unless (and (eq (discourse-topic-list-state-phase state) 'error)
-                 phase endpoint
-                 (null (discourse-topic-list-state-request-token state)))
+                 phase endpoint)
       (user-error "No failed Discourse topic request to retry"))
     (discourse-topic-list--request view phase endpoint)))
 
@@ -714,7 +671,6 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
     (let ((state (discourse-topic-list--state view)))
       (when (and (discourse-topic-list-state-loaded-p state)
                  (eq (discourse-topic-list-state-phase state) 'ready)
-                 (null (discourse-topic-list-state-request-token state))
                  (discourse-topic-list-state-more-url state)
                  (not (discourse-topic-list-state-exhausted-p state)))
         (discourse-topic-list--request view 'older)))))

@@ -55,9 +55,6 @@
   callback
   active-p)
 
-(defun discourse-http--owner-live-p (owner)
-  "Return non-nil when Appkit OWNER is live."
-  (or (appkit-app-live-p owner) (appkit-view-live-p owner)))
 
 (defun discourse-http--endpoint-url (account endpoint parameters)
   "Return validated ACCOUNT URL for ENDPOINT and PARAMETERS."
@@ -168,7 +165,7 @@
 (defun discourse-http--request-current-p (request)
   "Return non-nil when REQUEST may still publish."
   (and (discourse-http-request-active-p request)
-       (discourse-http--owner-live-p
+       (appkit-owner-live-p
         (discourse-http-request-owner request))
        (appkit-app-live-p
         (discourse-account-app (discourse-http-request-account request)))
