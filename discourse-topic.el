@@ -24,7 +24,7 @@
 (require 'appkit-position)
 (require 'appkit-projection)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'discourse-api)
 (require 'discourse-compose)
 (require 'discourse-customize)
@@ -535,7 +535,7 @@
       (error "No live Discourse topic view while rendering a post"))
     (appkit-discussion-insert-entry
      (discourse-topic--entry view (appkit-projection-row-payload row))
-     :width (or (appkit-view-window-fill-column) 80))))
+     :width (or (appkit-geometry-window-width) 80))))
 
 (defun discourse-topic--project (state)
   "Project loaded posts from topic STATE."

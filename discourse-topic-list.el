@@ -17,7 +17,7 @@
 (require 'appkit-projection)
 (require 'appkit-scroll)
 (require 'appkit-ui)
-(require 'appkit-view)
+(require 'appkit-presentation)
 (require 'discourse-api)
 (require 'discourse-compose)
 (require 'discourse-customize)
