@@ -12,19 +12,17 @@
 (require 'subr-x)
 (require 'url-parse)
 (require 'appkit-core)
+(require 'appkit-app)
+(require 'appkit-surface)
+(require 'appkit-projection)
 (require 'discourse-state)
 
 (cl-defstruct (discourse-account
                (:constructor discourse-account--create)
                (:copier nil))
-  id
-  origin
-  identity
-  user-id
-  username
-  client-id
-  app
-  state)
+  id origin identity user-id username client-id app state
+  (resources (make-hash-table :test #'equal))
+  (composers (make-hash-table :test #'equal)))
 
 (defvar discourse-runtime--anonymous-accounts (make-hash-table :test #'equal)
   "Live anonymous accounts keyed by normalized HTTPS origin.")
@@ -128,41 +126,39 @@
              discourse-runtime--anonymous-accounts)))
 
 (defun discourse-runtime--shutdown (app)
-  "Release the account transported by APP."
-  (let ((account (appkit-app-transport app)))
-    (when (discourse-account-p account)
-      (discourse-runtime--forget-account account)
-      (setf (discourse-account-app account) nil))))
+  "Release the account owned by APP."
+  (let ((account (appkit-app-model app)))
+    (discourse-runtime--forget-account account)
+    (clrhash (discourse-account-resources account))
+    (setf (discourse-account-app account) nil)))
 
-(appkit-define-app-kind discourse
-  :shutdown #'discourse-runtime--shutdown)
+(defconst discourse-runtime--app-type
+  (appkit-app-type-create
+   :name 'discourse
+   :init (lambda (_context account)
+           (appkit-next :model account :render appkit-render-none))
+   :update #'discourse-runtime--account-update
+   :shutdown #'discourse-runtime--shutdown))
 
 (cl-defun discourse-runtime--start-account
-    (origin id identity table table-key
-            &key user-id username client-id)
+    (origin id identity table table-key &key user-id username
+            client-id)
   "Start one account application and install it in TABLE under TABLE-KEY."
-  (let* ((state (discourse-state-create))
-         (account
-          (discourse-account--create
-           :id id
-           :origin origin
-           :identity identity
-           :user-id user-id
-           :username username
-           :client-id client-id
-           :state state))
-         app)
+  (let*
+      ((state (discourse-state-create))
+       (account
+        (discourse-account--create :id id :origin origin :identity
+                                   identity :user-id user-id :username
+                                   username :client-id client-id
+                                   :state state))
+       app)
     (condition-case error-data
         (progn
           (setq app
-                (appkit-app-start
-                 'discourse
-                 :id id
-                 :state state
-                 :transport account))
+                (appkit-app-start discourse-runtime--app-type
+                                  :identity id :input account))
           (setf (discourse-account-app account) app)
-          (puthash table-key account table)
-          account)
+          (puthash table-key account table) account)
       (error
        (when (appkit-app-p app)
          (ignore-errors (appkit-app-close app)))
@@ -225,6 +221,91 @@
   "Stop every live anonymous and authenticated Discourse account."
   (dolist (account (discourse-runtime-accounts))
     (discourse-runtime-stop-account account)))
+
+(defvar discourse-runtime--transition-context nil
+  "Context whose domain notifications become closed commands.")
+
+(defvar discourse-runtime--commands nil
+  "Reverse-ordered closed commands collected by the current transition.")
+
+(defvar-local discourse-runtime--surface-address nil
+  "Opaque address captured from this Surface's initialization context.")
+
+(defun discourse-runtime--surface-init (context state)
+  "Initialize STATE and retain this exact Surface's routing capability."
+  (setq-local discourse-runtime--surface-address
+              (appkit-transition-context-owner-address context))
+  (appkit-next :model state
+               :render (appkit-projection-change-create
+                        :full-p t :frame-p t :position 'first)))
+
+(defun discourse-runtime--post-surface (surface message)
+  "Deliver MESSAGE externally, or stage a closed transition post to SURFACE."
+  (if discourse-runtime--transition-context
+      (push (appkit-command-post-message
+             :target (buffer-local-value 'discourse-runtime--surface-address
+                                         (appkit-surface-buffer surface))
+             :message message :delivery 'report)
+            discourse-runtime--commands)
+    (appkit-surface-post surface message)))
+
+(defun discourse-runtime--surface-update (context model message)
+  "Commit projection requests and request Effects for a generated host."
+  (let ((discourse-runtime--transition-context context)
+        discourse-runtime--commands)
+    (pcase message
+      ((pred appkit-projection-change-p)
+       (appkit-next :model model :render message))
+      (`(start-effect ,effect)
+       (appkit-next :model model :render appkit-render-none
+                    :commands (list (appkit-command-start-effect effect))))
+      (`(response ,handler ,result)
+       (funcall handler result)
+       (appkit-next :model model :render appkit-render-none
+                    :commands (nreverse discourse-runtime--commands)))
+      (_ (discourse-media--update model message)))))
+
+(defun discourse-runtime--request-effect (surface key start handler)
+  "Run START as a replaceable request Effect owned by SURFACE.\nSTART receives a settlement function; HANDLER runs in the committed loop."
+  (discourse-runtime--post-surface surface
+                                   (list 'start-effect
+                                         (appkit-effect-create :key key :input nil
+                                                               :start
+                                                               (lambda
+                                                                 (_context _input
+                                                                           _observe
+                                                                           resolve
+                                                                           _reject)
+                                                                 (let
+                                                                     ((request
+                                                                        (funcall
+                                                                         start
+                                                                         resolve)))
+                                                                   (appkit-cancellation-create
+                                                                    :kind
+                                                                    'transport
+                                                                    :cancel
+                                                                    (lambda ()
+                                                                      (discourse-http-cancel
+                                                                       request)))))
+                                                               :success
+                                                               (lambda
+                                                                 (_input result)
+                                                                 (list 'response
+                                                                       handler
+                                                                       result))
+                                                               :failure
+                                                               (lambda
+                                                                 (_input result)
+                                                                 (list 'response
+                                                                       handler
+                                                                       result))
+                                                               :cancellation-requirement
+                                                               'transport))))
+
+(defun discourse-runtime--account-update (_context account _message)
+  "Retain ACCOUNT while its Resource coordinator commits image deliveries."
+  (appkit-next :model account :render appkit-render-none))
 
 (provide 'discourse-runtime)
 

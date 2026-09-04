@@ -16,7 +16,7 @@
 (require 'appkit-core)
 (require 'appkit-discussion)
 (require 'appkit-chat-ins)
-(require 'appkit-invalidation)
+
 (require 'appkit-scroll)
 (require 'appkit-markup)
 (require 'appkit-markup-ui)
@@ -38,9 +38,8 @@
 (declare-function discourse-topic-list-open-latest
                   "discourse-topic-list" (account &optional select))
 
-
 (defconst discourse-topic--request-key 'posts
-  "View request-table key for the active topic request.")
+  "Surface Effect key for the active topic request.")
 
 (defvar-local discourse-topic--scroll-observer nil
   "Lifecycle-owned automatic pagination observer for this topic.")
@@ -60,6 +59,9 @@
   loaded-ids
   phase
   message
+  media-phase
+  media-file
+  media-error
   loaded-p
   exhausted-p
   target-post-number
@@ -67,10 +69,16 @@
   retry-phase
   retry-post-ids)
 
+(defun discourse-topic--set-media-state (state phase file error)
+  "Commit reader-owned media PHASE, FILE and ERROR to STATE."
+  (setf (discourse-topic-state-media-phase state) phase
+        (discourse-topic-state-media-file state) file
+        (discourse-topic-state-media-error state) error))
+
 (defun discourse-topic--state (&optional view)
   "Return validated topic state for VIEW or the current view."
-  (let* ((view (or view (appkit-current-view)))
-         (state (and (appkit-view-live-p view) (appkit-view-state view))))
+  (let* ((view (or view (appkit-current-surface)))
+         (state (and (appkit-surface-live-p view) (appkit-surface-model view))))
     (unless (and (discourse-topic-state-p state)
                  (discourse-account-p (discourse-topic-state-account state)))
       (error "Current view has no Discourse topic state"))
@@ -202,7 +210,7 @@
         (appkit-ui-add-action
          start (point)
          (lambda ()
-           (with-current-buffer (appkit-view-buffer view)
+           (with-current-buffer (appkit-surface-buffer view)
              (discourse-topic-jump-to-post-number reply-to)))
          :face 'link
          :help-echo (format "Jump to post #%d" reply-to))))))
@@ -262,7 +270,7 @@
 
 (defun discourse-topic--insert-image-card (node value data)
   "Insert NODE as an Appkit image card using provider VALUE and DATA."
-  (let* ((view (appkit-current-view))
+  (let* ((view (appkit-current-surface))
          (state (discourse-topic--state view))
          (account (discourse-topic-state-account state))
          (context-data (plist-get data :context))
@@ -347,7 +355,7 @@
 
 (defun discourse-topic--insert-onebox-card (value data)
   "Insert provider VALUE and DATA as an Appkit rich embed card."
-  (let* ((view (appkit-current-view))
+  (let* ((view (appkit-current-surface))
          (state (discourse-topic--state view))
          (account (discourse-topic-state-account state))
          (context-data (plist-get data :context))
@@ -475,16 +483,7 @@
   "Insert POST body in VIEW with PREFIX and outer PROPERTIES."
   (let* ((state (discourse-topic--state view))
          (account (discourse-topic-state-account state))
-         (cooked
-          (discourse-topic--string
-           (discourse-topic--field post "cooked")))
-         (document
-          (discourse-markup-parse
-           cooked
-           (discourse-account-origin account)
-           :context
-           (list :topic-id (discourse-topic-state-topic-id state)
-                 :post-id (discourse-topic--post-id post)))))
+         (document (discourse-topic--document state post)))
     ;; Markup applies the discussion body prefix after insertion.  Cards
     ;; therefore need only their border marker here; Appkit's ordinary
     ;; four-column standalone card indent would otherwise be nested a second
@@ -530,25 +529,48 @@
 
 (defun discourse-topic--print-row (row)
   "Insert projected post ROW through Appkit discussion geometry."
-  (let ((view (appkit-current-view)))
-    (unless (appkit-view-live-p view)
+  (let ((view (appkit-current-surface)))
+    (unless (appkit-surface-live-p view)
       (error "No live Discourse topic view while rendering a post"))
     (appkit-discussion-insert-entry
      (discourse-topic--entry view (appkit-projection-row-payload row))
      :width (or (appkit-geometry-window-width) 80))))
 
+(defun discourse-topic--document (state post)
+  "Return POST's cached semantic document in topic STATE."
+  (let* ((account (discourse-topic-state-account state))
+         (resources (discourse-account-resources account))
+         (key (list 'post-document (discourse-topic--post-id post)))
+         (cooked (discourse-topic--string (discourse-topic--field post "cooked")))
+         (cached (gethash key resources)))
+    (if (equal cooked (car-safe cached))
+        (cdr cached)
+      (let ((document
+             (discourse-markup-parse
+              cooked (discourse-account-origin account)
+              :context (list :topic-id (discourse-topic-state-topic-id state)
+                             :post-id (discourse-topic--post-id post)))))
+        (puthash key (cons cooked document) resources)
+        document))))
+
 (defun discourse-topic--project (state)
-  "Project loaded posts from topic STATE."
-  (appkit-projection-project
-   (discourse-topic--ordered-posts state)
-   #'discourse-topic--post-id
-   :dependencies-function
-   (lambda (post)
-     (delq nil
-           (list (list :post (discourse-topic--post-id post))
-                 (when-let* ((user-id
-                              (discourse-topic--sender-id post)))
-                   (list :user user-id)))))))
+  "Project loaded posts and their declarative image Resources from STATE."
+  (let ((account (discourse-topic-state-account state)))
+    (mapcar
+     (lambda (post)
+       (let* ((id (discourse-topic--post-id post))
+              (user-id (discourse-topic--sender-id post))
+              (avatar (discourse-media-avatar-demand account user-id))
+              (demands (append (and avatar (list avatar))
+                               (discourse-media-document-demands
+                                account (discourse-topic--document state post)))))
+         (appkit-projection-row-create
+          :key id :payload post
+          :dependencies (append (delq nil (list (list :post id)
+                                                (and user-id (list :user user-id))))
+                                (mapcar #'appkit-resource-demand-key demands))
+          :resource-demands demands)))
+     (discourse-topic--ordered-posts state))))
 
 (defun discourse-topic--domain-state (state)
   "Return account-owned canonical state for topic STATE."
@@ -612,65 +634,46 @@
 
 (defun discourse-topic--footer (state)
   "Return generated footer for topic STATE."
-  (let ((loaded (hash-table-count
-                 (discourse-topic-state-loaded-ids state)))
-        (total (length (discourse-topic-state-stream state))))
-    (concat
-     "\n"
-     (pcase (discourse-topic-state-phase state)
-       ('initial "Loading topic…")
-       ('refresh (format "Refreshing topic… · %d/%d retained" loaded total))
-       ('posts (format "Loading more posts… · %d/%d loaded" loaded total))
-       ('error
-        (propertize
-         (format "%s · R retry · %s"
-                 (if (eq (discourse-topic-state-retry-phase state) 'posts)
-                     "Unable to load more posts"
-                   "Unable to load topic")
-                 (or (discourse-topic-state-message state) "unknown error"))
-         'face 'error))
-       (_
-        (propertize
-         (format "%d/%d posts loaded%s"
-                 loaded total
-                 (if (discourse-topic-state-exhausted-p state)
-                     " · complete"
-                   " · scroll for more"))
-         'face 'shadow)))
-     "\n")))
-
-(defun discourse-topic--position-intent (events)
-  "Return effective semantic position intent from EVENTS.
-An explicit post key wins over the default initial `first' position."
-  (or (cl-loop for event in (reverse events)
-               for position = (plist-get event :position)
-               when (and position
-                         (not (memq position '(first preserve))))
-               return position)
-      (and (seq-some
-            (lambda (event)
-              (eq (plist-get event :position) 'first))
-            events)
-           'first)
-      (cl-loop for event in (reverse events)
-               for position = (plist-get event :position)
-               when position return position)
-      'preserve))
-
-(defun discourse-topic--sync (view invalidations events)
-  "Synchronize topic VIEW from coalesced INVALIDATIONS and EVENTS."
-  (let ((state (discourse-topic--state view)))
-    (appkit-projection-sync-invalidations
-        view invalidations (discourse-topic--project state)
-      :reconcile-parts '(entries)
-      :header (discourse-topic--header state)
-      :footer (discourse-topic--footer state)
-      :position (discourse-topic--position-intent events))
-    (force-mode-line-update t)
-    (when (and (discourse-topic-state-loaded-p state)
-               (appkit-scroll-observer-p discourse-topic--scroll-observer))
-      (appkit-scroll-observer-check discourse-topic--scroll-observer))))
-
+  (let
+      ((loaded
+        (hash-table-count (discourse-topic-state-loaded-ids state)))
+       (total (length (discourse-topic-state-stream state))))
+    (concat "\n"
+            (pcase (discourse-topic-state-phase state)
+              ('initial "Loading topic…")
+              ('refresh
+               (format "Refreshing topic… · %d/%d retained" loaded
+                       total))
+              ('posts
+               (format "Loading more posts… · %d/%d loaded" loaded
+                       total))
+              ('error
+               (propertize
+                (format "%s · R retry · %s"
+                        (if
+                            (eq
+                             (discourse-topic-state-retry-phase state)
+                             'posts)
+                            "Unable to load more posts"
+                          "Unable to load topic")
+                        (or (discourse-topic-state-message state)
+                            "unknown error"))
+                'face 'error))
+              (_
+               (propertize
+                (format "%d/%d posts loaded%s" loaded total
+                        (if (discourse-topic-state-exhausted-p state)
+                            " · complete"
+                          " · scroll for more"))
+                'face 'shadow)))
+            "\n"
+            (pcase (discourse-topic-state-media-phase state)
+              ('opening "Opening image…\n")
+              ('error
+               (propertize
+                (format "Unable to open image: %s\n"
+                        (discourse-topic-state-media-error state))
+                'face 'error))))))
 
 (defun discourse-topic--failure-message (result)
   "Return presentation message for failed RESULT."
@@ -688,7 +691,8 @@ An explicit post key wins over the default initial `first' position."
         (discourse-topic-state-retry-phase state) phase
         (discourse-topic-state-retry-post-ids state)
         (and post-ids (copy-sequence post-ids)))
-  (appkit-request-sync view :part 'frame :position t)
+  (discourse-runtime--post-surface view
+                                   (appkit-projection-change-create :frame-p t))
   (unless (eq phase 'posts)
     (message "%s" (discourse-topic-state-message state))))
 
@@ -705,7 +709,7 @@ An explicit post key wins over the default initial `first' position."
   (when-let* ((topic (discourse-topic--canonical-topic state))
               (title (discourse-topic--field topic "title"))
               ((stringp title)))
-    (with-current-buffer (appkit-view-buffer view)
+    (with-current-buffer (appkit-surface-buffer view)
       (rename-buffer
        (format "*Discourse: %s · t/%s %s*"
                (discourse-topic--site-title state)
@@ -715,16 +719,24 @@ An explicit post key wins over the default initial `first' position."
 
 (defun discourse-topic--request-site-metadata (view)
   "Ensure shared public site metadata needed by VIEW."
-  (let* ((state (discourse-topic--state view))
-         (account (discourse-topic-state-account state)))
-    (discourse-site-ensure-metadata
-     account
-     (lambda (_kind)
-       (when (and (appkit-view-live-p view)
-                  (eq state (appkit-view-state view)))
-         (discourse-topic--update-buffer-name view state)
-         (appkit-request-sync view :part 'frame)))
-     :owner view)))
+  (let*
+      ((state (discourse-topic--state view))
+       (account (discourse-topic-state-account state)))
+    (discourse-site-ensure-metadata account
+                                    (lambda (_kind)
+                                      (when
+                                          (and
+                                           (appkit-surface-live-p view)
+                                           (eq state
+                                               (appkit-surface-model
+                                                view)))
+                                        (discourse-topic--update-buffer-name
+                                         view state)
+                                        (discourse-runtime--post-surface view
+                                                                         (appkit-projection-change-create
+                                                                          :frame-p
+                                                                          t))))
+                                    :owner view)))
 
 (defun discourse-topic--post-id-for-number (state post-number)
   "Return loaded post ID in STATE for POST-NUMBER."
@@ -735,15 +747,18 @@ An explicit post key wins over the default initial `first' position."
 
 (defun discourse-topic--focus-post-id (view post-id)
   "Move VIEW to stable POST-ID."
-  (appkit-view-enqueue-event view (list :position post-id))
-  (appkit-request-sync view :part 'entries :position t))
+  (discourse-runtime--post-surface view
+                                   (appkit-projection-change-create :position
+                                                                    post-id))
+  (discourse-runtime--post-surface view
+                                   (appkit-projection-change-create :full-p t)))
 
 (defun discourse-topic-jump-to-post-number (post-number)
   "Jump to POST-NUMBER, loading its stream page when necessary."
   (interactive "nPost number: ")
   (unless (and (integerp post-number) (> post-number 0))
     (user-error "Post number must be positive"))
-  (let* ((view (appkit-current-view))
+  (let* ((view (appkit-current-surface))
          (state (discourse-topic--state view))
          (source-id
           (or (get-text-property (point) discourse-topic-post-id-property)
@@ -770,7 +785,7 @@ An explicit post key wins over the default initial `first' position."
 (defun discourse-topic-jump-back ()
   "Return to the previous intra-topic post anchor."
   (interactive)
-  (let* ((view (appkit-current-view))
+  (let* ((view (appkit-current-surface))
          (state (discourse-topic--state view))
          target)
     (while (and (discourse-topic-state-back-stack state) (null target))
@@ -785,44 +800,56 @@ An explicit post key wins over the default initial `first' position."
 
 (defun discourse-topic--continue-target (view state)
   "Focus or continue loading STATE's target post in VIEW."
-  (when-let* ((post-number (discourse-topic-state-target-post-number state)))
-    (if-let* ((post-id
-               (discourse-topic--post-id-for-number state post-number)))
+  (when-let*
+      ((post-number (discourse-topic-state-target-post-number state)))
+    (if-let*
+        ((post-id
+          (discourse-topic--post-id-for-number state post-number)))
         (progn
           (setf (discourse-topic-state-target-post-number state) nil)
-          (appkit-view-enqueue-event view (list :position post-id))
-          (appkit-request-sync view :part 'entries :position t))
+          (discourse-runtime--post-surface view
+                                           (appkit-projection-change-create
+                                            :position post-id))
+          (discourse-runtime--post-surface view
+                                           (appkit-projection-change-create
+                                            :full-p t)))
       (if (discourse-topic-state-exhausted-p state)
           (progn
             (setf (discourse-topic-state-target-post-number state) nil)
-            (message "Post #%d is not available in this topic" post-number))
+            (message "Post #%d is not available in this topic"
+                     post-number))
         (discourse-topic--request view 'posts)))))
 
-(defun discourse-topic--handle-snapshot
-    (view state phase snapshot)
+(defun discourse-topic--handle-snapshot (view state phase snapshot)
   "Install validated SNAPSHOT into VIEW STATE for PHASE."
   (condition-case error-data
-      (let* ((topic (discourse-topic-snapshot-topic snapshot))
-             (topic-id (discourse-state-id (gethash "id" topic)))
-             (stream (discourse-topic-snapshot-stream snapshot))
-             (posts (discourse-topic-snapshot-posts snapshot))
-             (canonical (discourse-account-state
-                         (discourse-topic-state-account state))))
-        (unless (equal topic-id (discourse-topic-state-topic-id state))
+      (let*
+          ((topic (discourse-topic-snapshot-topic snapshot))
+           (topic-id (discourse-state-id (gethash "id" topic)))
+           (stream (discourse-topic-snapshot-stream snapshot))
+           (posts (discourse-topic-snapshot-posts snapshot))
+           (canonical
+            (discourse-account-state
+             (discourse-topic-state-account state))))
+        (unless
+            (equal topic-id (discourse-topic-state-topic-id state))
           (error "Discourse returned a different topic"))
         (discourse-state-merge-topic canonical topic)
-        (let ((loaded
-               (if (eq phase 'refresh)
-                   (discourse-topic--retain-loaded state stream)
-                 (make-hash-table :test #'equal))))
+        (let
+            ((loaded
+              (if (eq phase 'refresh)
+                  (discourse-topic--retain-loaded state stream)
+                (make-hash-table :test #'equal))))
           (dolist (post posts)
-            (let ((post-topic-id
-                   (discourse-state-id
-                    (discourse-topic--field post "topic_id"))))
+            (let
+                ((post-topic-id
+                  (discourse-state-id
+                   (discourse-topic--field post "topic_id"))))
               (unless (equal topic-id post-topic-id)
                 (error "Discourse returned a post from another topic")))
             (discourse-topic--observe-post-author canonical post)
-            (let ((post-id (discourse-state-merge-post canonical post)))
+            (let
+                ((post-id (discourse-state-merge-post canonical post)))
               (puthash post-id t loaded)))
           (setf (discourse-topic-state-stream state) stream
                 (discourse-topic-state-loaded-ids state) loaded
@@ -834,9 +861,16 @@ An explicit post key wins over the default initial `first' position."
                 (discourse-topic-state-exhausted-p state)
                 (cl-every (lambda (id) (gethash id loaded)) stream)))
         (discourse-topic--update-buffer-name view state)
-        (appkit-view-enqueue-event
-         view (list :position (if (eq phase 'initial) 'first 'preserve)))
-        (appkit-request-sync view :structure t :part 'frame :position t)
+        (discourse-runtime--post-surface view
+                                         (appkit-projection-change-create
+                                          :position
+                                          (if (eq phase 'initial) 'first
+                                            'preserve)))
+        (discourse-runtime--post-surface view
+                                         (appkit-projection-change-create :full-p
+                                                                          t
+                                                                          :frame-p
+                                                                          t))
         (if (discourse-topic-state-target-post-number state)
             (discourse-topic--continue-target view state)
           (message "Loaded %d/%d Discourse posts"
@@ -844,38 +878,36 @@ An explicit post key wins over the default initial `first' position."
                     (discourse-topic-state-loaded-ids state))
                    (length stream))))
     (error
-     (discourse-topic--handle-error
-      view state phase nil
-      (discourse-http-result-create
-       :ok-p nil
-       :failure
-       (discourse-http-failure-create
-        :kind 'invalid-response
-        :message (error-message-string error-data)))))))
+     (discourse-topic--handle-error view state phase nil
+                                    (discourse-http-result-create
+                                     :ok-p nil :failure
+                                     (discourse-http-failure-create
+                                      :kind 'invalid-response :message
+                                      (error-message-string error-data)))))))
 
-(defun discourse-topic--handle-post-page
-    (view state requested posts)
+(defun discourse-topic--handle-post-page (view state requested posts)
   "Install POSTS requested by REQUESTED into VIEW STATE."
   (condition-case error-data
-      (let* ((requested-table (make-hash-table :test #'equal))
-             (canonical
-              (discourse-account-state
-               (discourse-topic-state-account state)))
-             (topic-id (discourse-topic-state-topic-id state)))
+      (let*
+          ((requested-table (make-hash-table :test #'equal))
+           (canonical
+            (discourse-account-state
+             (discourse-topic-state-account state)))
+           (topic-id (discourse-topic-state-topic-id state)))
         (dolist (post-id requested)
           (puthash post-id t requested-table))
         (dolist (post posts)
-          (let ((post-id (discourse-topic--post-id post))
-                (post-topic-id
-                 (discourse-state-id
-                  (discourse-topic--field post "topic_id"))))
-            (unless (and (gethash post-id requested-table)
-                         (equal topic-id post-topic-id))
+          (let
+              ((post-id (discourse-topic--post-id post))
+               (post-topic-id
+                (discourse-state-id
+                 (discourse-topic--field post "topic_id"))))
+            (unless
+                (and (gethash post-id requested-table)
+                     (equal topic-id post-topic-id))
               (error "Discourse returned an unexpected post page"))
             (discourse-topic--observe-post-author canonical post)
             (discourse-state-merge-post canonical post)))
-        ;; Missing IDs can represent posts that became unavailable.  Mark
-        ;; every requested stream slot consumed so pagination cannot loop.
         (dolist (post-id requested)
           (puthash post-id t (discourse-topic-state-loaded-ids state)))
         (setf (discourse-topic-state-phase state) 'ready
@@ -887,20 +919,23 @@ An explicit post key wins over the default initial `first' position."
                (lambda (id)
                  (gethash id (discourse-topic-state-loaded-ids state)))
                (discourse-topic-state-stream state)))
-        (appkit-view-enqueue-event view (list :position 'preserve))
-        (appkit-request-sync view :structure t :part 'frame :position t)
+        (discourse-runtime--post-surface view
+                                         (appkit-projection-change-create
+                                          :position 'preserve))
+        (discourse-runtime--post-surface view
+                                         (appkit-projection-change-create :full-p
+                                                                          t
+                                                                          :frame-p
+                                                                          t))
         (when (discourse-topic-state-target-post-number state)
           (discourse-topic--continue-target view state)))
     (error
-     (discourse-topic--handle-error
-      view state 'posts requested
-      (discourse-http-result-create
-       :ok-p nil
-       :failure
-       (discourse-http-failure-create
-        :kind 'invalid-response
-        :message (error-message-string error-data)))))))
-
+     (discourse-topic--handle-error view state 'posts requested
+                                    (discourse-http-result-create
+                                     :ok-p nil :failure
+                                     (discourse-http-failure-create
+                                      :kind 'invalid-response :message
+                                      (error-message-string error-data)))))))
 
 (defun discourse-topic--next-post-ids (state)
   "Return next unloaded stream IDs for topic STATE."
@@ -914,7 +949,7 @@ An explicit post key wins over the default initial `first' position."
 (defun discourse-topic--maybe-auto-load
     (view _window position end)
   "Load VIEW's next post page when POSITION approaches END."
-  (when (and (appkit-view-live-p view)
+  (when (and (appkit-surface-live-p view)
              (numberp discourse-scroll-load-threshold)
              (appkit-scroll-near-end-p
               position end discourse-scroll-load-threshold))
@@ -937,52 +972,58 @@ An explicit post key wins over the default initial `first' position."
        view window position end)))))
 
 (defun discourse-topic--request (view phase &optional retry-post-ids)
-  "Start topic VIEW request for PHASE.
-RETRY-POST-IDS, when non-nil, is the exact failed post page to replay."
+  "Start a replaceable topic request for PHASE and RETRY-POST-IDS."
   (unless (memq phase '(initial refresh posts))
     (error "Invalid Discourse topic request phase"))
-  (let* ((state (discourse-topic--state view))
-         (post-ids
-          (and (eq phase 'posts)
-               (copy-sequence
-                (or retry-post-ids
-                    (discourse-topic--next-post-ids state))))))
+  (let*
+      ((state (discourse-topic--state view))
+       (post-ids
+        (and (eq phase 'posts)
+             (copy-sequence
+              (or retry-post-ids
+                  (discourse-topic--next-post-ids state))))))
     (when (and (eq phase 'posts) (null post-ids))
       (setf (discourse-topic-state-exhausted-p state) t)
       (user-error "No more Discourse posts"))
-    (let ((operation
-           (appkit-view-operation-begin view discourse-topic--request-key)))
-      (setf (discourse-topic-state-phase state) phase
-            (discourse-topic-state-message state) nil
-            (discourse-topic-state-retry-phase state) nil
-            (discourse-topic-state-retry-post-ids state) nil)
-      (appkit-request-sync view :part 'frame :position t)
-      (if (eq phase 'posts)
-          (discourse-api-topic-posts
-           (discourse-topic-state-account state)
-           (discourse-topic-state-topic-id state)
-           post-ids
-           (lambda (result)
-             (when (appkit-view-operation-finish operation)
-               (if (discourse-http-result-ok-p result)
-                   (discourse-topic--handle-post-page
-                    view state post-ids
-                    (discourse-http-result-data result))
-                 (discourse-topic--handle-error
-                  view state phase post-ids result))))
-           :owner operation)
-        (discourse-api-topic
-         (discourse-topic-state-account state)
-         (discourse-topic-state-topic-id state)
-         (lambda (result)
-           (when (appkit-view-operation-finish operation)
-             (if (discourse-http-result-ok-p result)
-                 (discourse-topic--handle-snapshot
-                  view state phase
-                  (discourse-http-result-data result))
-               (discourse-topic--handle-error
-                view state phase nil result))))
-         :owner operation)))))
+    (setf (discourse-topic-state-phase state) phase
+          (discourse-topic-state-message state) nil
+          (discourse-topic-state-retry-phase state) nil
+          (discourse-topic-state-retry-post-ids state) nil)
+    (discourse-runtime--post-surface view
+                                     (appkit-projection-change-create :frame-p t))
+    (discourse-runtime--request-effect view
+                                       discourse-topic--request-key
+                                       (lambda (resolve)
+                                         (if (eq phase 'posts)
+                                             (discourse-api-topic-posts
+                                              (discourse-topic-state-account
+                                               state)
+                                              (discourse-topic-state-topic-id
+                                               state)
+                                              post-ids resolve :owner
+                                              view)
+                                           (discourse-api-topic
+                                            (discourse-topic-state-account
+                                             state)
+                                            (discourse-topic-state-topic-id
+                                             state)
+                                            resolve :owner view)))
+                                       (lambda (result)
+                                         (if
+                                             (discourse-http-result-ok-p
+                                              result)
+                                             (if (eq phase 'posts)
+                                                 (discourse-topic--handle-post-page
+                                                  view state post-ids
+                                                  (discourse-http-result-data
+                                                   result))
+                                               (discourse-topic--handle-snapshot
+                                                view state phase
+                                                (discourse-http-result-data
+                                                 result)))
+                                           (discourse-topic--handle-error
+                                            view state phase post-ids
+                                            result))))))
 
 (defun discourse-topic-can-reply-p ()
   "Return non-nil when the server permits replying to the current topic."
@@ -1006,7 +1047,7 @@ RETRY-POST-IDS, when non-nil, is the exact failed post page to replay."
   "Compose a reply to the post at point.
 With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
   (interactive "P")
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic")))
          (state (discourse-topic--state view))
          (post (and (not topic-level-p)
@@ -1027,7 +1068,7 @@ With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
   "Refresh the current topic and focus accepted POST-NUMBER."
   (unless (and (integerp post-number) (> post-number 0))
     (error "Discourse accepted an invalid post number"))
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic")))
          (state (discourse-topic--state view)))
     (setf (discourse-topic-state-target-post-number state) post-number)
@@ -1036,7 +1077,7 @@ With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
 (defun discourse-topic-refresh ()
   "Refresh the current Discourse topic snapshot."
   (interactive)
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic")))
          (state (discourse-topic--state view)))
     (discourse-topic--request
@@ -1053,7 +1094,7 @@ With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
 (defun discourse-topic-retry ()
   "Retry the current topic's exact failed request."
   (interactive)
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic")))
          (state (discourse-topic--state view))
          (phase (discourse-topic-state-retry-phase state))
@@ -1063,7 +1104,6 @@ With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
                  (or (not (eq phase 'posts)) post-ids))
       (user-error "No failed Discourse topic request to retry"))
     (discourse-topic--request view phase post-ids)))
-
 
 (defun discourse-topic-open-latest ()
   "Open the current topic's account Latest view."
@@ -1090,64 +1130,75 @@ With TOPIC-LEVEL-P, compose an unscoped reply to the topic."
               header-line-format
               '(:eval (discourse-topic--header-line))))
 
-(defun discourse-topic--setup (view)
-  "Initialize newly attached topic VIEW."
-  (discourse-topic--state view)
-  (appkit-projection-ensure
-   view
-   :printer #'discourse-topic--print-row
-   :anchor-property appkit-discussion-key-property
-   :no-separator-p t)
-  (discourse-topic--install-scroll-observer view)
-  (appkit-view-enable-responsive-geometry view)
-  (appkit-view-enqueue-event view (list :position 'first))
-  (appkit-invalidate view :structure t :parts '(frame entries geometry))
-  (appkit-sync-invalidations view)
-  (discourse-topic--request-site-metadata view)
-  (discourse-topic--request view 'initial))
+(defun discourse-topic--setup (surface)
+  "Initialize the mounted generated SURFACE."
+  (with-current-buffer (appkit-surface-buffer surface)
+    (discourse-topic--install-scroll-observer surface)
+    (appkit-surface-enable-responsive-geometry surface
+                                               (lambda
+                                                 (owner &rest _events)
+                                                 (discourse-runtime--post-surface
+                                                  owner
+                                                  (appkit-projection-change-create
+                                                   :geometry-p t))))
+    (discourse-topic--request-site-metadata surface)
+    (discourse-topic--request surface 'initial)))
 
-(defun discourse-topic-open
-    (account topic-id &optional select post-number)
+(defun discourse-topic-open (account topic-id &optional select post-number)
   "Open ACCOUNT TOPIC-ID and optionally SELECT it at POST-NUMBER."
   (unless (and (discourse-account-p account)
                (appkit-app-live-p (discourse-account-app account)))
     (user-error "Discourse account is not running"))
   (let* ((topic-id (discourse-state-id topic-id))
          (app (discourse-account-app account))
-         (view-id (list 'topic topic-id))
-         (existing (appkit-view-for-id app view-id))
-         (state
-          (if existing
-              (appkit-view-state existing)
-            (discourse-topic-state-create
-             :account account
-             :topic-id topic-id
-             :stream nil
-             :loaded-ids (make-hash-table :test #'equal)
-             :phase 'initial
-             :loaded-p nil
-             :exhausted-p nil
-             :target-post-number post-number)))
-         (view
-          (appkit-open-view
-           :app app
-           :id view-id
-           :mode #'discourse-topic-mode
-           :buffer-name
-           (format "*Discourse: %s · t/%s*"
-                   (discourse-account-origin account) topic-id)
-           :state state
-           :sync-function #'discourse-topic--sync
-           :parts '(frame entries geometry)
-           :position-policy 'semantic
-           :setup #'discourse-topic--setup
-           :select select)))
+         (identity (list 'topic topic-id))
+         (existing (appkit-app-surface app identity))
+         (surface
+          (or existing
+              (appkit-open-generated-surface
+               discourse-topic--surface-type :app app :identity identity
+               :buffer-name (format "*Discourse: %s · t/%s*"
+                                    (discourse-account-origin account) topic-id)
+               :input (discourse-topic-state-create
+                       :account account :topic-id topic-id :stream nil
+                       :loaded-ids (make-hash-table :test #'equal)
+                       :phase 'initial :target-post-number post-number))))
+         (state (appkit-surface-model surface)))
+    (unless existing (discourse-topic--setup surface))
     (when (and existing post-number)
       (setf (discourse-topic-state-target-post-number state) post-number)
-      (unless (memq (discourse-topic-state-phase state)
-                    '(initial refresh posts))
-        (discourse-topic--continue-target view state)))
-    (appkit-view-buffer view)))
+      (unless (memq (discourse-topic-state-phase state) '(initial refresh posts))
+        (discourse-topic--continue-target surface state)))
+    (when select (pop-to-buffer (appkit-surface-buffer surface)))
+    (appkit-surface-buffer surface)))
+
+(defun discourse-topic--renderer (_surface)
+  "Create this host's native projection renderer."
+  (let* ((renderer
+          (appkit-projection-renderer-create
+           :project-all (lambda (_surface _app state) (discourse-topic--project state))
+           :project-frame (lambda (_surface _app state)
+                            (cons (or (discourse-topic--header state) "")
+                                  (or (discourse-topic--footer state) "")))
+           :printer (lambda (_surface _app row) (discourse-topic--print-row row))
+           :anchor-property appkit-discussion-key-property
+           :no-separator-p t))
+         (render (appkit-generated-renderer-render renderer)))
+    (setf (appkit-generated-renderer-render renderer)
+          (lambda (surface app state change)
+            (prog1 (funcall render surface app state change)
+              (force-mode-line-update t)
+              (when (and (discourse-topic-state-loaded-p state)
+                         (appkit-scroll-observer-p discourse-topic--scroll-observer))
+                (appkit-scroll-observer-check discourse-topic--scroll-observer)))))
+    renderer))
+
+(defconst discourse-topic--surface-type
+  (appkit-surface-type-create
+   :name 'discourse-topic :mode #'discourse-topic-mode
+   :init #'discourse-runtime--surface-init
+   :update #'discourse-runtime--surface-update
+   :renderer-factory #'discourse-topic--renderer))
 
 (provide 'discourse-topic)
 

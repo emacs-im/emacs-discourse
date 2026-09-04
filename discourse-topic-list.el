@@ -13,7 +13,7 @@
 (require 'time-date)
 (require 'appkit-chat-avatar)
 (require 'appkit-core)
-(require 'appkit-invalidation)
+
 (require 'appkit-projection)
 (require 'appkit-scroll)
 (require 'appkit-ui)
@@ -33,12 +33,11 @@
                   "discourse-transient" ())
 
 (defconst discourse-topic-list--request-key 'topics
-  "View request-table key for the active topic page request.")
+  "Surface Effect key for the active topic page request.")
 
 (defconst discourse-topic-list-poster-property
   'discourse-topic-list-poster
   "Text property carrying one featured-poster presentation record.")
-
 
 (defvar-local discourse-topic-list--scroll-observer nil
   "Lifecycle-owned automatic pagination observer for this topic list.")
@@ -52,7 +51,6 @@
   '((t :inherit discourse-topic-list-title :weight bold))
   "Face for unseen topic titles in a Discourse list."
   :group 'discourse)
-
 
 (defconst discourse-topic-list-id-property 'discourse-topic-id
   "Text property carrying a stable Discourse topic ID.")
@@ -73,8 +71,8 @@
 
 (defun discourse-topic-list--state (&optional view)
   "Return validated topic-list state for VIEW or the current view."
-  (let* ((view (or view (appkit-current-view)))
-         (state (and (appkit-view-live-p view) (appkit-view-state view))))
+  (let* ((view (or view (appkit-current-surface)))
+         (state (and (appkit-surface-live-p view) (appkit-surface-model view))))
     (unless (and (discourse-topic-list-state-p state)
                  (discourse-account-p
                   (discourse-topic-list-state-account state)))
@@ -134,12 +132,10 @@ NOW defaults to `current-time' and exists for deterministic callers."
              (t (format "%dy" (floor (/ seconds 31536000))))))
         (error "")))))
 
-
 (defun discourse-topic-list--domain-state (list-state)
   "Return canonical domain state owned by LIST-STATE."
   (discourse-account-state
    (discourse-topic-list-state-account list-state)))
-
 
 (defun discourse-topic-list--poster-name (topic domain-state)
   "Return TOPIC's latest poster name from DOMAIN-STATE."
@@ -361,11 +357,20 @@ preformatted relative timestamp."
     (discourse-topic-list--restore-poster-help start (point))))
 
 (defun discourse-topic-list--project (state)
-  "Project topic-list STATE into stable rows."
-  (appkit-projection-project
-   (discourse-topic-list-state-topics state)
-   #'discourse-topic-list--id
-   :dependencies-function #'discourse-topic-list--topic-dependencies))
+  "Project topic-list STATE with account-private avatar Resources."
+  (let ((account (discourse-topic-list-state-account state)))
+    (mapcar
+     (lambda (topic)
+       (let* ((dependencies (discourse-topic-list--topic-dependencies topic))
+              (demands (delq nil (mapcar
+                                  (lambda (dependency)
+                                    (discourse-media-avatar-demand account (cadr dependency)))
+                                  dependencies))))
+         (appkit-projection-row-create
+          :key (discourse-topic-list--id topic) :payload topic
+          :dependencies (append dependencies (mapcar #'appkit-resource-demand-key demands))
+          :resource-demands demands)))
+     (discourse-topic-list-state-topics state))))
 
 (defun discourse-topic-list--header-line ()
   "Return the persistent header line for the current Latest view."
@@ -433,36 +438,6 @@ preformatted relative timestamp."
          'face 'shadow)))
      "\n")))
 
-(defun discourse-topic-list--position-intent (events)
-  "Return effective semantic position intent from EVENTS."
-  (or (cl-loop for event in events
-               when (eq (plist-get event :position) 'first)
-               return 'first)
-      (cl-loop for event in (reverse events)
-               for position = (plist-get event :position)
-               when position return position)
-      'preserve))
-
-(defun discourse-topic-list--sync (view invalidations events)
-  "Synchronize topic-list VIEW from INVALIDATIONS and EVENTS."
-  (let* ((state (discourse-topic-list--state view))
-         (metadata-p
-          (memq 'metadata (appkit-invalidations-parts invalidations))))
-    (appkit-projection-sync-invalidations
-        view invalidations (discourse-topic-list--project state)
-      :reconcile-parts '(entries metadata)
-      :force-keys (and metadata-p (appkit-projection-keys view))
-      :header ""
-      :footer (discourse-topic-list--footer state)
-      :position (discourse-topic-list--position-intent events))
-    (force-mode-line-update t)
-    (when (and (discourse-topic-list-state-loaded-p state)
-               (appkit-scroll-observer-p
-                discourse-topic-list--scroll-observer))
-      (appkit-scroll-observer-check
-       discourse-topic-list--scroll-observer))))
-
-
 (defun discourse-topic-list--failure-message (result)
   "Return presentation message for failed HTTP RESULT."
   (let ((failure (discourse-http-result-failure result)))
@@ -478,7 +453,8 @@ preformatted relative timestamp."
         (discourse-topic-list--failure-message result)
         (discourse-topic-list-state-retry-phase state) phase
         (discourse-topic-list-state-retry-endpoint state) endpoint)
-  (appkit-request-sync view :part 'frame :position t)
+  (discourse-runtime--post-surface view
+                                   (appkit-projection-change-create :frame-p t))
   (unless (eq phase 'older)
     (message "%s" (discourse-topic-list-state-message state))))
 
@@ -495,31 +471,33 @@ preformatted relative timestamp."
 
 (defun discourse-topic-list--handle-success
     (view state phase endpoint page)
-  "Install validated PAGE into VIEW STATE for PHASE.
-ENDPOINT is retained only if response validation fails."
+  "Install validated PAGE into VIEW STATE for PHASE.\nENDPOINT is retained only if response validation fails."
   (condition-case error-data
-      (let* ((topics (discourse-topic-page-topics page))
-             (users (discourse-topic-page-users page))
-             (domain-state
-              (discourse-account-state
-               (discourse-topic-list-state-account state)))
-             (current (discourse-topic-list-state-topics state))
-             (installed
-              (pcase phase
-                ((or 'initial 'refresh)
-                 (append topics
-                         (discourse-topic-list--new-topics topics current)))
-                ('older
-                 (append current
-                         (discourse-topic-list--new-topics current topics)))
-                (_ (error "Invalid topic request phase")))))
+      (let*
+          ((topics (discourse-topic-page-topics page))
+           (users (discourse-topic-page-users page))
+           (domain-state
+            (discourse-account-state
+             (discourse-topic-list-state-account state)))
+           (current (discourse-topic-list-state-topics state))
+           (installed
+            (pcase phase
+              ((or 'initial 'refresh)
+               (append topics
+                       (discourse-topic-list--new-topics topics
+                                                         current)))
+              ('older
+               (append current
+                       (discourse-topic-list--new-topics current
+                                                         topics)))
+              (_ (error "Invalid topic request phase")))))
         (dolist (user users)
           (discourse-state-merge-user domain-state user))
         (dolist (topic topics)
           (discourse-state-merge-topic domain-state topic))
-        (discourse-state-set-can-create-topic
-         domain-state
-         (discourse-topic-page-can-create-topic-p page))
+        (discourse-state-set-can-create-topic domain-state
+                                              (discourse-topic-page-can-create-topic-p
+                                               page))
         (setf (discourse-topic-list-state-topics state) installed
               (discourse-topic-list-state-more-url state)
               (discourse-topic-page-more-url page)
@@ -532,92 +510,121 @@ ENDPOINT is retained only if response validation fails."
               (discourse-topic-list-state-loaded-p state) t
               (discourse-topic-list-state-exhausted-p state)
               (null (discourse-topic-page-more-url page)))
-        (appkit-view-enqueue-event
-         view (list :position (if (eq phase 'initial) 'first 'preserve)))
-        (appkit-request-sync view :structure t :part 'frame :position t)
+        (discourse-runtime--post-surface view
+                                         (appkit-projection-change-create
+                                          :position
+                                          (if (eq phase 'initial) 'first
+                                            'preserve)))
+        (discourse-runtime--post-surface view
+                                         (appkit-projection-change-create :full-p
+                                                                          t
+                                                                          :frame-p
+                                                                          t))
         (unless (eq phase 'older)
           (message "Loaded %d Discourse topics" (length topics))))
     (error
-     (let ((result
-            (discourse-http-result-create
-             :ok-p nil
-             :failure
-             (discourse-http-failure-create
-              :kind 'invalid-response
-              :message (error-message-string error-data)))))
-       (discourse-topic-list--handle-error
-        view state phase endpoint result)))))
+     (let
+         ((result
+           (discourse-http-result-create :ok-p nil :failure
+                                         (discourse-http-failure-create
+                                          :kind 'invalid-response
+                                          :message
+                                          (error-message-string
+                                           error-data)))))
+       (discourse-topic-list--handle-error view state phase endpoint
+                                           result)))))
 
 (defun discourse-topic-list--update-buffer-name (view profile)
   "Rename VIEW from validated site PROFILE."
-  (when (and (appkit-view-live-p view) (hash-table-p profile))
+  (when (and (appkit-surface-live-p view) (hash-table-p profile))
     (let ((title (gethash "title" profile)))
       (when (and (stringp title) (not (string-empty-p title)))
-        (with-current-buffer (appkit-view-buffer view)
+        (with-current-buffer (appkit-surface-buffer view)
           (rename-buffer (format "*Discourse: %s · Latest*" title) t))))))
 
 (defun discourse-topic-list--request-site-metadata (view)
   "Ensure shared public site metadata needed by VIEW."
-  (let* ((state (discourse-topic-list--state view))
-         (account (discourse-topic-list-state-account state))
-         (domain-state (discourse-account-state account)))
+  (let*
+      ((state (discourse-topic-list--state view))
+       (account (discourse-topic-list-state-account state))
+       (domain-state (discourse-account-state account)))
     (when-let* ((profile (discourse-state-site-profile domain-state)))
       (discourse-topic-list--update-buffer-name view profile))
-    (discourse-site-ensure-metadata
-     account
-     (lambda (kind)
-       (when (and (appkit-view-live-p view)
-                  (eq state (appkit-view-state view)))
-         (pcase kind
-           ('categories
-            (appkit-request-sync view :part 'metadata))
-           ('profile
-            (discourse-topic-list--update-buffer-name
-             view (discourse-state-site-profile domain-state))
-            (appkit-request-sync view :part 'frame)))))
-     :owner view)))
+    (discourse-site-ensure-metadata account
+                                    (lambda (kind)
+                                      (when
+                                          (and
+                                           (appkit-surface-live-p view)
+                                           (eq state
+                                               (appkit-surface-model
+                                                view)))
+                                        (pcase kind
+                                          ('categories
+                                           (discourse-runtime--post-surface view
+                                                                            (appkit-projection-change-create
+                                                                             :full-p
+                                                                             t
+                                                                             :geometry-p
+                                                                             t)))
+                                          ('profile
+                                           (discourse-topic-list--update-buffer-name
+                                            view
+                                            (discourse-state-site-profile
+                                             domain-state))
+                                           (discourse-runtime--post-surface view
+                                                                            (appkit-projection-change-create
+                                                                             :frame-p
+                                                                             t))))))
+                                    :owner view)))
 
-
-(defun discourse-topic-list--request (view phase &optional retry-endpoint)
-  "Start topic-list VIEW request for PHASE.
-RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
+(defun discourse-topic-list--request
+    (view phase &optional retry-endpoint)
+  "Start a replaceable topic-list request for PHASE and RETRY-ENDPOINT."
   (unless (memq phase '(initial refresh older))
     (error "Invalid Discourse topic request phase"))
-  (let* ((state (discourse-topic-list--state view))
-         (endpoint
-          (or retry-endpoint
-              (if (eq phase 'older)
-                  (or (discourse-topic-list-state-more-url state)
-                      (user-error "No more Discourse topics"))
-                "/latest.json"))))
-    (when (and (eq phase 'older)
-               (discourse-topic-list-state-exhausted-p state))
+  (let*
+      ((state (discourse-topic-list--state view))
+       (endpoint
+        (or retry-endpoint
+            (if (eq phase 'older)
+                (or (discourse-topic-list-state-more-url state)
+                    (user-error "No more Discourse topics"))
+              "/latest.json"))))
+    (when
+        (and (eq phase 'older)
+             (discourse-topic-list-state-exhausted-p state))
       (user-error "No more Discourse topics"))
-    (let ((operation
-           (appkit-view-operation-begin
-            view discourse-topic-list--request-key)))
-      (setf (discourse-topic-list-state-phase state) phase
-            (discourse-topic-list-state-message state) nil
-            (discourse-topic-list-state-retry-phase state) nil
-            (discourse-topic-list-state-retry-endpoint state) nil)
-      (appkit-request-sync view :part 'frame :position t)
-      (discourse-api-topic-page
-       (discourse-topic-list-state-account state)
-       (lambda (result)
-         (when (appkit-view-operation-finish operation)
-           (if (discourse-http-result-ok-p result)
-               (discourse-topic-list--handle-success
-                view state phase endpoint
-                (discourse-http-result-data result))
-             (discourse-topic-list--handle-error
-              view state phase endpoint result))))
-       :endpoint endpoint
-       :owner operation))))
+    (setf (discourse-topic-list-state-phase state) phase
+          (discourse-topic-list-state-message state) nil
+          (discourse-topic-list-state-retry-phase state) nil
+          (discourse-topic-list-state-retry-endpoint state) nil)
+    (discourse-runtime--post-surface view
+                                     (appkit-projection-change-create :frame-p t))
+    (discourse-runtime--request-effect view
+                                       discourse-topic-list--request-key
+                                       (lambda (resolve)
+                                         (discourse-api-topic-page
+                                          (discourse-topic-list-state-account
+                                           state)
+                                          resolve :endpoint endpoint
+                                          :owner view))
+                                       (lambda (result)
+                                         (if
+                                             (discourse-http-result-ok-p
+                                              result)
+                                             (discourse-topic-list--handle-success
+                                              view state phase
+                                              endpoint
+                                              (discourse-http-result-data
+                                               result))
+                                           (discourse-topic-list--handle-error
+                                            view state phase endpoint
+                                            result))))))
 
 (defun discourse-topic-list-refresh ()
   "Refresh the current Discourse topic list."
   (interactive)
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic list")))
          (state (discourse-topic-list--state view)))
     (discourse-topic-list--request
@@ -636,7 +643,7 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
 (defun discourse-topic-list-retry ()
   "Retry the current topic list's exact failed request."
   (interactive)
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic list")))
          (state (discourse-topic-list--state view))
          (phase (discourse-topic-list-state-retry-phase state))
@@ -646,11 +653,10 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
       (user-error "No failed Discourse topic request to retry"))
     (discourse-topic-list--request view phase endpoint)))
 
-
 (defun discourse-topic-list--maybe-auto-load
     (view _window position end)
   "Load VIEW's next topic page when POSITION approaches END."
-  (when (and (appkit-view-live-p view)
+  (when (and (appkit-surface-live-p view)
              (numberp discourse-scroll-load-threshold)
              (appkit-scroll-near-end-p
               position end discourse-scroll-load-threshold))
@@ -730,7 +736,7 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
 (defun discourse-topic-list-compose-topic ()
   "Open a new-topic composer for the current authenticated account."
   (interactive)
-  (let* ((view (or (appkit-current-view)
+  (let* ((view (or (appkit-current-surface)
                    (user-error "No live Discourse topic list")))
          (state (discourse-topic-list--state view)))
     (unless (discourse-topic-list-can-create-topic-p)
@@ -770,20 +776,13 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
               header-line-format
               '(:eval (discourse-topic-list--header-line))))
 
-(defun discourse-topic-list--setup (view)
-  "Initialize newly attached topic-list VIEW."
-  (discourse-topic-list--state view)
-  (appkit-projection-ensure
-   view
-   :printer #'discourse-topic-list--print-row
-   :anchor-property discourse-topic-list-id-property
-   :no-separator-p t)
-  (discourse-topic-list--install-scroll-observer view)
-  (appkit-view-enqueue-event view (list :position 'first))
-  (appkit-invalidate view :structure t :parts '(frame entries))
-  (appkit-sync-invalidations view)
-  (discourse-topic-list--request-site-metadata view)
-  (discourse-topic-list--request view 'initial))
+(defun discourse-topic-list--setup (surface)
+  "Initialize the mounted generated SURFACE."
+  (with-current-buffer (appkit-surface-buffer surface)
+    (discourse-topic-list--install-scroll-observer surface)
+    
+    (discourse-topic-list--request-site-metadata surface)
+    (discourse-topic-list--request surface 'initial)))
 
 (defun discourse-topic-list-open-latest (account &optional select)
   "Open ACCOUNT's Latest topic list and optionally SELECT it."
@@ -791,32 +790,45 @@ RETRY-ENDPOINT, when non-nil, is the exact failed endpoint to replay."
                (appkit-app-live-p (discourse-account-app account)))
     (user-error "Discourse account is not running"))
   (let* ((app (discourse-account-app account))
-         (view-id '(topics latest))
-         (existing (appkit-view-for-id app view-id))
-         (state
-          (if existing
-              (appkit-view-state existing)
-            (discourse-topic-list-state-create
-             :account account
-             :topics nil
-             :phase 'initial
-             :loaded-p nil
-             :exhausted-p nil)))
-         (view
-          (appkit-open-view
-           :app app
-           :id view-id
-           :mode #'discourse-topic-list-mode
-           :buffer-name
-           (format "*Discourse: %s · Latest*"
-                   (discourse-account-origin account))
-           :state state
-           :sync-function #'discourse-topic-list--sync
-           :parts '(frame entries metadata)
-           :position-policy 'semantic
-           :setup #'discourse-topic-list--setup
-           :select select)))
-    (appkit-view-buffer view)))
+         (existing (appkit-app-surface app '(topics latest)))
+         (surface
+          (or existing
+              (appkit-open-generated-surface
+               discourse-topic-list--surface-type :app app :identity '(topics latest)
+               :buffer-name (format "*Discourse: %s · Latest*" (discourse-account-origin account))
+               :input (discourse-topic-list-state-create
+                       :account account :topics nil :phase 'initial)))))
+    (unless existing (discourse-topic-list--setup surface))
+    (when select (pop-to-buffer (appkit-surface-buffer surface)))
+    (appkit-surface-buffer surface)))
+
+(defun discourse-topic-list--renderer (_surface)
+  "Create this host's native projection renderer."
+  (let* ((renderer
+          (appkit-projection-renderer-create
+           :project-all (lambda (_surface _app state) (discourse-topic-list--project state))
+           :project-frame (lambda (_surface _app state)
+                            (cons ""
+                                  (or (discourse-topic-list--footer state) "")))
+           :printer (lambda (_surface _app row) (discourse-topic-list--print-row row))
+           :anchor-property discourse-topic-list-id-property
+           :no-separator-p t))
+         (render (appkit-generated-renderer-render renderer)))
+    (setf (appkit-generated-renderer-render renderer)
+          (lambda (surface app state change)
+            (prog1 (funcall render surface app state change)
+              (force-mode-line-update t)
+              (when (and (discourse-topic-list-state-loaded-p state)
+                         (appkit-scroll-observer-p discourse-topic-list--scroll-observer))
+                (appkit-scroll-observer-check discourse-topic-list--scroll-observer)))))
+    renderer))
+
+(defconst discourse-topic-list--surface-type
+  (appkit-surface-type-create
+   :name 'discourse-topic-list :mode #'discourse-topic-list-mode
+   :init #'discourse-runtime--surface-init
+   :update #'discourse-runtime--surface-update
+   :renderer-factory #'discourse-topic-list--renderer))
 
 (provide 'discourse-topic-list)
 

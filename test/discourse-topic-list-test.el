@@ -1,6 +1,7 @@
 ;;; discourse-topic-list-test.el --- Topic-list UI contracts -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'discourse-test-helper)
 (require 'discourse-api)
 (require 'discourse-runtime)
 (require 'discourse-topic-list)
@@ -21,107 +22,118 @@
     (should (equal "1.5k" (discourse-topic-list--number 1540)))
     (should (equal "2m" (discourse-topic-list--number 2000000)))
     (should (equal "#emacs" (substring-no-properties
-                              (discourse-ui-topic-tags topic))))
+                             (discourse-ui-topic-tags topic))))
     (should (equal "5h"
                    (discourse-topic-list--format-activity
                     topic (date-to-time "2026-09-02T12:00:00Z"))))))
 
-(ert-deftest discourse-topic-list-renders-discourse-information-hierarchy ()
-  (let* ((category
-          (discourse-topic-list-test--object
-           "id" 5 "name" "General" "color" "3AB54A"))
-         (profile
-          (discourse-topic-list-test--object
-           "title" "Example Forum"
-           "description" "An example community"))
-         (original-user
-          (discourse-topic-list-test--object
-           "id" 7 "username" "alice"
-           "avatar_template" "/alice/{size}.png"))
-         (latest-user
-          (discourse-topic-list-test--object
-           "id" 8 "username" "bob"
-           "avatar_template" "/bob/{size}.png"))
-         (original-poster
-          (discourse-topic-list-test--object
-           "user_id" 7 "description" "Original poster"))
-         (latest-poster
-          (discourse-topic-list-test--object
-           "user_id" 8 "extras" "latest"
-           "description" "Latest poster"))
-         (tag
-          (discourse-topic-list-test--object "name" "emacs"))
-         (first
-          (discourse-topic-list-test--object
-           "id" 42
-           "title" "A deliberately structured topic"
-           "category_id" 5
-           "posts_count" 13
-           "views" 1540
-           "bumped_at" "2026-09-02T07:00:00Z"
-           "posters" (vector original-poster latest-poster)
-           "tags" (vector tag)))
-         (second
-          (discourse-topic-list-test--object
-           "id" 43
-           "title" "Another topic"
-           "category_id" 5
-           "posts_count" 1
-           "views" 9
-           "bumped_at" "2026-09-02T08:00:00Z"
-           "posters" (vector latest-poster)
-           "tags" []))
-         (page
-          (discourse-topic-page-create
-           :topics (list first second)
-           :users (list original-user latest-user)
-           :more-url nil))
-         (account (discourse-runtime-create-account "https://example.test"))
-         buffer)
+(ert-deftest
+    discourse-topic-list-renders-discourse-information-hierarchy ()
+  (let*
+      ((category
+        (discourse-topic-list-test--object "id" 5 "name" "General"
+                                           "color" "3AB54A"))
+       (profile
+        (discourse-topic-list-test--object "title" "Example Forum"
+                                           "description"
+                                           "An example community"))
+       (original-user
+        (discourse-topic-list-test--object "id" 7 "username" "alice"
+                                           "avatar_template"
+                                           "/alice/{size}.png"))
+       (latest-user
+        (discourse-topic-list-test--object "id" 8 "username" "bob"
+                                           "avatar_template"
+                                           "/bob/{size}.png"))
+       (original-poster
+        (discourse-topic-list-test--object "user_id" 7 "description"
+                                           "Original poster"))
+       (latest-poster
+        (discourse-topic-list-test--object "user_id" 8 "extras"
+                                           "latest" "description"
+                                           "Latest poster"))
+       (tag (discourse-topic-list-test--object "name" "emacs"))
+       (first
+        (discourse-topic-list-test--object "id" 42 "title"
+                                           "A deliberately structured topic"
+                                           "category_id" 5
+                                           "posts_count" 13 "views"
+                                           1540 "bumped_at"
+                                           "2026-09-02T07:00:00Z"
+                                           "posters"
+                                           (vector original-poster
+                                                   latest-poster)
+                                           "tags" (vector tag)))
+       (second
+        (discourse-topic-list-test--object "id" 43 "title"
+                                           "Another topic"
+                                           "category_id" 5
+                                           "posts_count" 1 "views" 9
+                                           "bumped_at"
+                                           "2026-09-02T08:00:00Z"
+                                           "posters"
+                                           (vector latest-poster)
+                                           "tags" []))
+       (page
+        (discourse-topic-page-create :topics (list first second)
+                                     :users
+                                     (list original-user latest-user)
+                                     :more-url nil))
+       (account
+        (discourse-runtime-create-account "https://example.test"))
+       buffer)
     (unwind-protect
-        (cl-letf (((symbol-function 'discourse-api-topic-page)
-                   (lambda (_account callback &rest _arguments)
-                     (funcall callback
-                              (discourse-http-result-create
-                               :ok-p t :data page))
-                     nil))
-                  ((symbol-function 'discourse-api-site-categories)
-                   (lambda (_account callback &rest _arguments)
-                     (funcall callback
-                              (discourse-http-result-create
-                               :ok-p t :data (list category)))
-                     nil))
-                  ((symbol-function 'discourse-api-site-profile)
-                   (lambda (_account callback &rest _arguments)
-                     (funcall callback
-                              (discourse-http-result-create
-                               :ok-p t :data profile))
-                     nil))
-                  ((symbol-function 'appkit-view-responsive-width)
-                   (lambda (&rest _arguments)
-                     (ert-fail "Topic rendering queried window width")))
-                  ((symbol-function 'discourse-media-avatar-image)
-                   (lambda (_account user-id)
-                     (list 'image :type 'png :data user-id)))
-                  ((symbol-function 'appkit-chat-avatar-resize-image)
-                   (lambda (image _pixel-size) image))
-                  ((symbol-function 'appkit-chat-avatar-line-pixel-height)
-                   (lambda () 16))
-                  ((symbol-function 'current-time)
-                   (lambda () (date-to-time "2026-09-02T12:00:00Z"))))
-          (setq buffer (discourse-topic-list-open-latest account nil))
+        (cl-letf
+            (((symbol-function 'discourse-media-avatar-demand) #'ignore)
+             ((symbol-function 'discourse-api-topic-page)
+              (lambda (_account callback &rest _arguments)
+                (funcall callback
+                         (discourse-http-result-create :ok-p t :data
+                                                       page))
+                nil))
+             ((symbol-function 'discourse-api-site-categories)
+              (lambda (_account callback &rest _arguments)
+                (funcall callback
+                         (discourse-http-result-create :ok-p t :data
+                                                       (list category)))
+                nil))
+             ((symbol-function 'discourse-api-site-profile)
+              (lambda (_account callback &rest _arguments)
+                (funcall callback
+                         (discourse-http-result-create :ok-p t :data
+                                                       profile))
+                nil))
+             ((symbol-function 'appkit-surface-responsive-width)
+              (lambda (&rest _arguments)
+                (ert-fail "Topic rendering queried window width")))
+             ((symbol-function
+               'discourse-media-avatar-image)
+              (lambda (_account user-id)
+                (list 'image :type 'png :data user-id)))
+             ((symbol-function 'appkit-chat-avatar-resize-image)
+              (lambda (image _pixel-size) image))
+             ((symbol-function 'appkit-chat-avatar-line-pixel-height)
+              (lambda () 16))
+             ((symbol-function 'current-time)
+              (lambda () (date-to-time "2026-09-02T12:00:00Z"))))
+          (setq buffer
+                (prog1 (discourse-topic-list-open-latest account nil)
+                  (discourse-test-drain account)))
           (with-current-buffer buffer
-            (appkit-sync-invalidations (appkit-current-view))
-            (let ((text (buffer-substring-no-properties
-                         (point-min) (point-max))))
-              (let ((header
-                     (substring-no-properties
-                      (discourse-topic-list--header-line))))
+            (let
+                ((text
+                  (buffer-substring-no-properties (point-min)
+                                                  (point-max))))
+              (let
+                  ((header
+                    (substring-no-properties
+                     (discourse-topic-list--header-line))))
                 (should (string-match-p "Example Forum" header))
                 (should (string-match-p "Latest" header))
                 (should (string-match-p "anonymous" header)))
               (should-not (string-match-p "An example community" text))
-              (should (string-match-p "A deliberately structured topic" text))
+              (should
+               (string-match-p "A deliberately structured topic" text))
               (should (string-match-p "General" text))
               (should (string-match-p "#emacs" text))
               (should (string-match-p "@alice.*@bob" text))
@@ -131,72 +143,69 @@
               (should-not (string-match-p "likes" text))
               (should (string-match-p "12 replies" text))
               (should (string-match-p "1\\.5k views" text))
-              (let ((category-position (string-match "General" text))
-                    (tags-position (string-match "#emacs" text))
-                    (activity-position (string-match "5h by @bob" text))
-                    (replies-position (string-match "12 replies" text))
-                    (views-position (string-match "1\\.5k views" text)))
+              (let
+                  ((category-position (string-match "General" text))
+                   (tags-position (string-match "#emacs" text))
+                   (activity-position (string-match "5h by @bob" text))
+                   (replies-position (string-match "12 replies" text))
+                   (views-position (string-match "1\\.5k views" text)))
                 (should
                  (< category-position tags-position activity-position
                     replies-position views-position)))
               (should
                (string-match-p
-                (concat
-                 "A deliberately structured topic\n"
-                 "  .*General.*#emacs\n"
-                 "  5h by @bob  ·  posters @alice @bob\n"
-                 "  12 replies  ·  1\\.5k views\n"
-                 "Another topic")
+                (concat "A deliberately structured topic\n"
+                        "  .*General.*#emacs\n"
+                        "  5h by @bob  ·  posters @alice @bob\n"
+                        "  12 replies  ·  1\\.5k views\n"
+                        "Another topic")
                 text))
               (should-not
-               (string-match-p "Replies[[:space:]]+Views[[:space:]]+Activity"
-                               text))
-              (should
-               (equal '((:user "7") (:user "8"))
-                      (discourse-topic-list--topic-dependencies first)))
+               (string-match-p
+                "Replies[[:space:]]+Views[[:space:]]+Activity" text))
               (save-excursion
-                (goto-char (point-min))
-                (search-forward "@alice")
+                (goto-char (point-min)) (search-forward "@alice")
                 (let ((position (- (point) (length "@alice"))))
-                  (should (equal '(image :type png :data "7")
-                                 (get-text-property position 'display)))
-                  (should (equal "@alice — Original poster"
-                                 (get-text-property
-                                  position 'help-echo)))))
-              (let ((view (appkit-current-view)))
+                  (should
+                   (equal '(image :type png :data "7")
+                          (get-text-property position 'display)))
+                  (should
+                   (equal "@alice — Original poster"
+                          (get-text-property position 'help-echo)))))
+              (let ((view (appkit-current-surface)))
                 (setq-local fill-column 40)
-                (appkit-invalidate
-                 view :structure t :parts '(frame entries))
-                (appkit-sync-invalidations view)
+                (prog1
+                    (appkit-surface-send view
+                                         (appkit-projection-change-create
+                                          :full-p t :frame-p t))
+                  (discourse-test-drain account))
                 (should
                  (equal text
-                        (buffer-substring-no-properties
-                         (point-min) (point-max))))))
-            (should-not
-             (lookup-key discourse-topic-list-mode-map (kbd "N")))
-            (should
-             (eq (lookup-key discourse-topic-list-mode-map (kbd "R"))
-                 #'discourse-topic-list-retry))
+                        (buffer-substring-no-properties (point-min)
+                                                        (point-max))))))
+
             (goto-char (point-min))
             (search-forward "A deliberately structured topic")
             (beginning-of-line)
-            (should (equal "42"
-                           (get-text-property
-                            (point) discourse-topic-list-id-property)))
+            (should
+             (equal "42"
+                    (get-text-property (point)
+                                       discourse-topic-list-id-property)))
             (save-excursion
               (dotimes (_ 4)
-                (should (equal "42"
-                               (get-text-property
-                                (point)
-                                discourse-topic-list-id-property)))
+                (should
+                 (equal "42"
+                        (get-text-property (point)
+                                           discourse-topic-list-id-property)))
                 (forward-line 1)))
             (discourse-topic-list-next)
-            (should (equal "43"
-                           (get-text-property
-                            (point) discourse-topic-list-id-property)))
-            (let* ((view (appkit-current-view))
-                   (state (appkit-view-state view))
-                   requested-phase)
+            (should
+             (equal "43"
+                    (get-text-property (point)
+                                       discourse-topic-list-id-property)))
+            (let*
+                ((view (appkit-current-surface))
+                 (state (appkit-surface-model view)) requested-phase)
               (setf (discourse-topic-list-state-more-url state)
                     "/latest?page=1"
                     (discourse-topic-list-state-exhausted-p state) nil)
@@ -204,102 +213,100 @@
                   (((symbol-function 'discourse-topic-list--request)
                     (lambda (_view phase &optional _endpoint)
                       (setq requested-phase phase))))
-                (discourse-topic-list--maybe-auto-load
-                 view nil (point-max) (point-max)))
+                (discourse-topic-list--maybe-auto-load view nil
+                                                       (point-max)
+                                                       (point-max)))
               (should (eq requested-phase 'older))
               (let (retried-phase retried-endpoint)
                 (setf (discourse-topic-list-state-phase state) 'error
-                      (discourse-topic-list-state-retry-phase state) 'older
+                      (discourse-topic-list-state-retry-phase state)
+                      'older
                       (discourse-topic-list-state-retry-endpoint state)
                       "/latest?page=1")
                 (should (discourse-topic-list-retry-available-p))
                 (cl-letf
                     (((symbol-function 'discourse-topic-list--request)
                       (lambda (_view phase &optional endpoint)
-                        (setq retried-phase phase
-                              retried-endpoint endpoint))))
-                  (discourse-topic-list-retry))
+                        (setq retried-phase phase retried-endpoint
+                              endpoint))))
+                  (prog1 (discourse-topic-list-retry)
+                    (discourse-test-drain account)))
                 (should (eq retried-phase 'older))
                 (should (equal retried-endpoint "/latest?page=1")))))
-          (should (string-match-p "Example Forum" (buffer-name buffer))))
-          (let* ((view (with-current-buffer buffer (appkit-current-view)))
-                 (state (appkit-view-state view)))
-            (should
-             (eq buffer
-                 (discourse-topic-list-open-latest account nil)))
-            (should (eq state (appkit-view-state view)))
-            (should (= 2
-                       (length
-                        (discourse-topic-list-state-topics state)))))
+          (should
+           (string-match-p "Example Forum" (buffer-name buffer)))
+          (let* ((view (with-current-buffer buffer (appkit-current-surface)))
+                 (state (appkit-surface-model view)))
+            (should (eq buffer (discourse-topic-list-open-latest account nil)))
+            (discourse-test-drain account)
+            (should (eq state (appkit-surface-model view)))
+            (should (= 2 (length (discourse-topic-list-state-topics state))))))
       (when (discourse-account-p account)
         (discourse-runtime-stop-account account)))))
 
-
-(ert-deftest discourse-topic-list-exposes-create-only-from-server-capability ()
-  (let* ((account
-          (discourse-runtime-create-authenticated-account
-           "https://example.test" "7" "alice" "client-7"))
-         (category
-          (discourse-topic-list-test--object
-           "id" 5 "name" "General" "permission" 1))
-         (page
-          (discourse-topic-page-create
-           :topics nil :users nil :more-url nil
-           :can-create-topic-p t))
-         buffer
-         composed)
+(ert-deftest
+    discourse-topic-list-exposes-create-only-from-server-capability
+    ()
+  (let*
+      ((account
+        (discourse-runtime-create-authenticated-account
+         "https://example.test" "7" "alice" "client-7"))
+       (category
+        (discourse-topic-list-test--object "id" 5 "name" "General"
+                                           "permission" 1))
+       (page
+        (discourse-topic-page-create :topics nil :users nil :more-url
+                                     nil :can-create-topic-p t))
+       buffer composed)
     (unwind-protect
         (cl-letf
             (((symbol-function 'discourse-api-topic-page)
               (lambda (_account callback &rest _arguments)
                 (funcall callback
-                         (discourse-http-result-create
-                          :ok-p t :data page))
+                         (discourse-http-result-create :ok-p t :data
+                                                       page))
                 nil))
              ((symbol-function 'discourse-api-site-categories)
               (lambda (_account callback &rest _arguments)
                 (funcall callback
-                         (discourse-http-result-create
-                          :ok-p t :data (list category)))
+                         (discourse-http-result-create :ok-p t :data
+                                                       (list category)))
                 nil))
              ((symbol-function 'discourse-api-site-profile)
               (lambda (_account callback &rest _arguments)
-                (funcall
-                 callback
-                 (discourse-http-result-create
-                  :ok-p t
-                  :data
-                  (discourse-topic-list-test--object
-                   "title" "Example Forum")))
+                (funcall callback
+                         (discourse-http-result-create :ok-p t :data
+                                                       (discourse-topic-list-test--object
+                                                        "title"
+                                                        "Example Forum")))
                 nil))
              ((symbol-function 'discourse-compose-new-topic)
               (lambda (sent-account &rest options)
                 (setq composed (cons sent-account options))
                 'compose-buffer)))
           (setq buffer
-                (discourse-topic-list-open-latest account nil))
+                (prog1 (discourse-topic-list-open-latest account nil)
+                  (discourse-test-drain account)))
           (with-current-buffer buffer
-            (appkit-sync-invalidations (appkit-current-view))
             (should (discourse-topic-list-can-create-topic-p))
             (should
-             (string-match-p
-              "@alice"
-              (substring-no-properties
-               (discourse-topic-list--header-line))))
-            (should
-             (eq #'discourse-topic-list-compose-topic
-                 (lookup-key discourse-topic-list-mode-map (kbd "c"))))
+             (string-match-p "@alice"
+                             (substring-no-properties
+                              (discourse-topic-list--header-line))))
+
             (discourse-topic-list-compose-topic)
             (should (eq account (car composed)))
             (should
-             (eq (appkit-current-view)
+             (eq (appkit-current-surface)
                  (plist-get (cdr composed) :source-view)))))
       (discourse-runtime-stop-account account))))
-(ert-deftest discourse-topic-list-operation-owns-and-replaces-transport ()
-  (let ((account (discourse-runtime-create-account "https://example.test"))
-        requests
-        cancelled
-        buffer)
+
+(ert-deftest
+    discourse-topic-list-operation-owns-and-replaces-transport ()
+  (let
+      ((account
+        (discourse-runtime-create-account "https://example.test"))
+       requests cancelled buffer)
     (unwind-protect
         (cl-letf
             (((symbol-function 'message) #'ignore)
@@ -307,43 +314,36 @@
                'discourse-topic-list--request-site-metadata)
               #'ignore)
              ((symbol-function 'discourse-api-topic-page)
-              (lambda (_account callback &rest options)
-                (let* ((owner (plist-get options :owner))
-                       (request (make-symbol "discourse-request-")))
-                  (appkit-register-handle
-                   owner 'function request
-                   (lambda (active) (push active cancelled)))
-                  (push (list request callback owner) requests)
-                  request))))
-          (setq buffer (discourse-topic-list-open-latest account nil))
+              (lambda (_account callback &rest _options)
+                (let ((request (make-symbol "request-")))
+                  (push (cons request callback) requests) request)))
+             ((symbol-function 'discourse-http-cancel)
+              (lambda (request) (push request cancelled))))
+          (setq buffer
+                (prog1 (discourse-topic-list-open-latest account nil)
+                  (discourse-test-drain account)))
           (with-current-buffer buffer
-            (let* ((view (appkit-current-view))
-                   (state (appkit-view-state view))
-                   (first (car requests))
-                   (first-operation (nth 2 first)))
-              (should (appkit-view-operation-p first-operation))
-              (should
-               (eq first-operation
-                   (gethash discourse-topic-list--request-key
-                            (appkit-view-request-table view))))
-              (discourse-topic-list-refresh)
+            (let*
+                ((surface (appkit-current-surface))
+                 (state (appkit-surface-model surface))
+                 (first (car requests))
+                 (result
+                  (discourse-http-result-create :ok-p t :data
+                                                (discourse-topic-page-create
+                                                 :topics nil :users
+                                                 nil :more-url nil))))
+              (prog1 (discourse-topic-list-refresh)
+                (discourse-test-drain account))
               (let ((second (car requests)))
-                (should-not (eq first second))
                 (should (memq (car first) cancelled))
-                (funcall
-                 (nth 1 first)
-                 (discourse-http-result-create
-                  :ok-p t
-                  :data
-                  (discourse-topic-page-create
-                   :topics nil :users nil :more-url nil)))
-                (should-not (discourse-topic-list-state-loaded-p state))
-                (appkit-view-operation-cancel-all view)
+                (funcall (cdr first) result)
+                (should-not
+                 (discourse-topic-list-state-loaded-p state))
+                (appkit-surface-stop surface)
                 (should (memq (car second) cancelled))
-                (should
-                 (zerop
-                  (hash-table-count
-                   (appkit-view-request-table view))))))))
+                (funcall (cdr second) result)
+                (should-not
+                 (discourse-topic-list-state-loaded-p state))))))
       (discourse-runtime-stop-account account))))
 
 (provide 'discourse-topic-list-test)

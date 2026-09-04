@@ -34,7 +34,7 @@
   "Authenticated account owning the current composer.")
 
 (defvar-local discourse-compose-source-view nil
-  "Appkit view from which the current composer was opened.")
+  "Generated Surface from which the current composer was opened.")
 
 (defvar-local discourse-compose-topic-id nil
   "Reply topic ID, or nil for a new topic.")
@@ -471,8 +471,8 @@
 
 (defun discourse-compose--refresh-source (&optional post-number)
   "Refresh the live source view, optionally targeting POST-NUMBER."
-  (when (appkit-view-live-p discourse-compose-source-view)
-    (let ((buffer (appkit-view-buffer discourse-compose-source-view)))
+  (when (appkit-surface-live-p discourse-compose-source-view)
+    (let ((buffer (appkit-surface-buffer discourse-compose-source-view)))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (cond
@@ -502,13 +502,13 @@
          (source-view
           (with-current-buffer buffer discourse-compose-source-view)))
     (discourse-state-merge-post (discourse-account-state account) post)
-    (if (and (appkit-view-live-p source-view)
-             (with-current-buffer (appkit-view-buffer source-view)
+    (if (and (appkit-surface-live-p source-view)
+             (with-current-buffer (appkit-surface-buffer source-view)
                (derived-mode-p 'discourse-topic-mode)))
         (progn
           (with-current-buffer buffer
             (discourse-compose--refresh-source post-number))
-          (pop-to-buffer (appkit-view-buffer source-view)))
+          (pop-to-buffer (appkit-surface-buffer source-view)))
       (discourse-topic-open account topic-id t post-number))
     (discourse-compose--close-accepted buffer)
     (message "Discourse accepted post #%d" post-number)))
@@ -520,7 +520,7 @@
       (discourse-compose--refresh-source))
     (discourse-compose--close-accepted buffer)
     (message "%s" (or server-message
-                       "Discourse queued the post for approval"))))
+                      "Discourse queued the post for approval"))))
 
 (defun discourse-compose--settle-success (buffer owner created)
   "Settle BUFFER OWNER with accepted CREATED result."
@@ -583,74 +583,67 @@
 
 (defun discourse-compose-submit ()
   "Submit the current immutable draft exactly once without automatic retry."
-  (interactive)
-  (discourse-compose--ensure-idle)
+  (interactive) (discourse-compose--ensure-idle)
   (when discourse-compose-write-outcome
-    (unless (yes-or-no-p
-             "The previous send may have succeeded; send this draft again anyway? ")
+    (unless
+        (yes-or-no-p
+         "The previous send may have succeeded; send this draft again anyway? ")
       (user-error "Discourse resend canceled"))
     (setq-local discourse-compose-write-outcome nil
                 discourse-compose-message nil))
-  (let* ((capture (appkit-compose-capture))
-         (generation (plist-get capture :generation))
-         (draft
-          (discourse-compose--validate-draft
-           (plist-get capture :value)))
-         (buffer (current-buffer))
-         (view (or (appkit-current-view)
-                   (error "Discourse composer has no Appkit view")))
-         (owner
-          (appkit-compose-operation-begin
-           'submitting
-           :generation generation
-           :label (if (eq discourse-compose-kind 'topic)
-                      "Creating topic…"
-                    "Sending reply…")))
-         request
-         callback-ran-p)
-    (setq-local buffer-read-only t
-                discourse-compose-message nil)
+  (let*
+      ((capture (appkit-compose-capture))
+       (generation (plist-get capture :generation))
+       (draft
+        (discourse-compose--validate-draft (plist-get capture :value)))
+       (buffer (current-buffer))
+       (view (discourse-account-app discourse-compose-account))
+       (owner
+        (appkit-compose-operation-begin 'submitting :generation
+                                        generation :label
+                                        (if
+                                            (eq discourse-compose-kind
+                                                'topic)
+                                            "Creating topic…"
+                                          "Sending reply…")))
+       request callback-ran-p)
+    (setq-local buffer-read-only t discourse-compose-message nil)
     (condition-case error-data
         (progn
-          (setq
-           request
-           (pcase (plist-get draft :kind)
-             ('topic
-              (discourse-api-create-topic
-               discourse-compose-account
-               (plist-get draft :title)
-               (plist-get draft :raw)
-               (lambda (result)
-                 (setq callback-ran-p t)
-                 (discourse-compose--submit-callback buffer owner result))
-               :category-id (plist-get draft :category-id)
-               :tags (plist-get draft :tags)
-               :composer-open-duration
-               (plist-get draft :composer-open-duration)
-               :typing-duration (plist-get draft :typing-duration)
-               :owner view))
-             ('reply
-              (discourse-api-create-reply
-               discourse-compose-account
-               (plist-get draft :topic-id)
-               (plist-get draft :raw)
-               (lambda (result)
-                 (setq callback-ran-p t)
-                 (discourse-compose--submit-callback buffer owner result))
-               :reply-to-post-number
-               (plist-get draft :reply-to-post-number)
-               :composer-open-duration
-               (plist-get draft :composer-open-duration)
-               :typing-duration (plist-get draft :typing-duration)
-               :owner view))))
-          (when (and request
-                     (not callback-ran-p)
-                     (appkit-compose-operation-current-p owner))
-            (appkit-compose-operation-update
-             owner
-             :cancel-function
-             (lambda ()
-               (discourse-compose--cancel-write buffer owner request)))))
+          (setq request
+                (pcase (plist-get draft :kind)
+                  ('topic
+                   (discourse-api-create-topic
+                    discourse-compose-account (plist-get draft :title)
+                    (plist-get draft :raw)
+                    (lambda (result) (setq callback-ran-p t)
+                      (discourse-compose--submit-callback buffer owner
+                                                          result))
+                    :category-id (plist-get draft :category-id) :tags
+                    (plist-get draft :tags) :composer-open-duration
+                    (plist-get draft :composer-open-duration)
+                    :typing-duration
+                    (plist-get draft :typing-duration) :owner view))
+                  ('reply
+                   (discourse-api-create-reply
+                    discourse-compose-account
+                    (plist-get draft :topic-id) (plist-get draft :raw)
+                    (lambda (result) (setq callback-ran-p t)
+                      (discourse-compose--submit-callback buffer owner
+                                                          result))
+                    :reply-to-post-number
+                    (plist-get draft :reply-to-post-number)
+                    :composer-open-duration
+                    (plist-get draft :composer-open-duration)
+                    :typing-duration
+                    (plist-get draft :typing-duration) :owner view))))
+          (when
+              (and request (not callback-ran-p)
+                   (appkit-compose-operation-current-p owner))
+            (appkit-compose-operation-update owner :cancel-function
+                                             (lambda ()
+                                               (discourse-compose--cancel-write
+                                                buffer owner request)))))
       (error
        (when (appkit-compose-operation-current-p owner)
          (appkit-compose-operation-finish owner)
@@ -693,26 +686,30 @@
     (account kind &key source-view topic-id reply-to-post-number
              reply-to-username title category-id tags select)
   "Open or reuse ACCOUNT's composer for KIND and supplied context."
-  (unless (and (discourse-account-authenticated-p account)
-               (appkit-app-live-p (discourse-account-app account)))
-    (user-error "Discourse composition requires a live User API Key account"))
-  (let* ((app (discourse-account-app account))
-         (view-id
-          (pcase kind
-            ('topic '(compose new-topic))
-            ('reply (list 'compose 'reply
-                          (discourse-state-id topic-id)
-                          reply-to-post-number))
-            (_ (error "Invalid Discourse compose kind"))))
-         (existing (appkit-view-for-id app view-id)))
-    (if (appkit-view-live-p existing)
-        (let ((buffer (appkit-view-buffer existing)))
-          (when select (pop-to-buffer buffer))
-          buffer)
-      (let ((buffer
-             (generate-new-buffer
-              (discourse-compose--buffer-name
-               account kind topic-id reply-to-post-number))))
+  (unless
+      (and (discourse-account-authenticated-p account)
+           (appkit-app-live-p (discourse-account-app account)))
+    (user-error
+     "Discourse composition requires a live User API Key account"))
+  (let*
+      ((app (discourse-account-app account))
+       (view-id
+        (pcase kind
+          ('topic '(compose new-topic))
+          ('reply
+           (list 'compose 'reply (discourse-state-id topic-id)
+                 reply-to-post-number))
+          (_ (error "Invalid Discourse compose kind"))))
+       (existing
+        (gethash view-id (discourse-account-composers account))))
+    (if (buffer-live-p existing)
+        (let ((buffer existing))
+          (when select (pop-to-buffer buffer)) buffer)
+      (let
+          ((buffer
+            (generate-new-buffer
+             (discourse-compose--buffer-name account kind topic-id
+                                             reply-to-post-number))))
         (condition-case error-data
             (with-current-buffer buffer
               (discourse-compose-mode)
@@ -725,11 +722,13 @@
                           reply-to-post-number
                           discourse-compose-reply-to-username
                           (and reply-to-username
-                               (substring-no-properties reply-to-username))
+                               (substring-no-properties
+                                reply-to-username))
                           discourse-compose-title
                           (and title (substring-no-properties title))
                           discourse-compose-category-id
-                          (and category-id (discourse-state-id category-id))
+                          (and category-id
+                               (discourse-state-id category-id))
                           discourse-compose-tags (copy-sequence tags)
                           discourse-compose-opened-at (float-time)
                           discourse-compose-typing-duration 0
@@ -739,21 +738,44 @@
                 (discourse-compose--install-category-template
                  (discourse-compose--category category-id)))
               (goto-char (point-max))
-              (appkit-attach-view
-               :app app
-               :id view-id
-               :mode #'discourse-compose-mode
-               :sync-function #'ignore)
-              (appkit-compose-setup
-               :snapshot-function #'discourse-compose--snapshot
-               :state-change-function #'discourse-compose--state-changed)
+              (let
+                  ((handle
+                    (appkit-register-handle app 'compose-buffer buffer
+                                            (lambda (host)
+                                              (when
+                                                  (buffer-live-p host)
+                                                (with-current-buffer
+                                                    host
+                                                  (setq-local
+                                                   discourse-compose--accepted-p
+                                                   t)
+                                                  (set-buffer-modified-p
+                                                   nil))
+                                                (kill-buffer host))))))
+                (puthash view-id buffer
+                         (discourse-account-composers account))
+                (add-hook 'kill-buffer-hook
+                          (lambda ()
+                            (when
+                                (eq buffer
+                                    (gethash view-id
+                                             (discourse-account-composers
+                                              account)))
+                              (remhash view-id
+                                       (discourse-account-composers
+                                        account)))
+                            (appkit-retire-handle handle))
+                          nil t))
+              (appkit-compose-setup :snapshot-function
+                                    #'discourse-compose--snapshot
+                                    :state-change-function
+                                    #'discourse-compose--state-changed)
               (add-hook 'after-change-functions
                         #'discourse-compose--track-typing t t)
               (add-hook 'kill-buffer-query-functions
                         #'discourse-compose--confirm-kill nil t)
               (set-buffer-modified-p nil)
-              (when select (pop-to-buffer buffer))
-              buffer)
+              (when select (pop-to-buffer buffer)) buffer)
           (error
            (when (buffer-live-p buffer)
              (with-current-buffer buffer

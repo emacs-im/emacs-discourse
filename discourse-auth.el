@@ -21,7 +21,7 @@
 (require 'discourse-state)
 
 (define-error 'discourse-auth-credential-error
-  "Discourse User API Key is unavailable")
+              "Discourse User API Key is unavailable")
 
 (defconst discourse-auth--source-port "discourse-user-api"
   "auth-source service name for Discourse User API keys.")
@@ -56,7 +56,7 @@
 
 (defun discourse-auth--owner-live-p (owner)
   "Return non-nil when Appkit OWNER remains live."
-  (or (appkit-app-live-p owner) (appkit-view-live-p owner)))
+  (or (appkit-app-live-p owner) (appkit-surface-live-p owner)))
 
 (defun discourse-auth--ensure-directory ()
   "Return the private authorization directory after securing it."
@@ -72,6 +72,7 @@
   "Return the OpenSSL executable or signal a user error."
   (or (executable-find "openssl")
       (user-error "OpenSSL is required for Discourse User API Key authorization")))
+
 (defun discourse-auth--openssl-output (&rest arguments)
   "Run OpenSSL ARGUMENTS and return its unibyte standard output."
   (with-temp-buffer
@@ -468,15 +469,15 @@ application and owns cancellation.  Return a cancellable authorization request."
            (expand-file-name "authorization-"
                              (discourse-auth--ensure-directory))))
          (request
-          (discourse-auth-request--create
-           :active-p t
-           :capture-file capture-file
-           :private-key-file private-key-file
-           :nonce nonce
-           :client-id client-id
-           :origin origin
-           :owner owner
-           :callback callback))
+           (discourse-auth-request--create
+            :active-p t
+            :capture-file capture-file
+            :private-key-file private-key-file
+            :nonce nonce
+            :client-id client-id
+            :origin origin
+            :owner owner
+            :callback callback))
          browser-request
          handle)
     (unless (discourse-auth--owner-live-p owner)
