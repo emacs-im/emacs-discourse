@@ -123,7 +123,7 @@
       (when (discourse-auth-request-p request)
         (when-let* ((owner (discourse-auth-request-owner request))
                     ((appkit-app-live-p owner)))
-          (appkit-stop-app owner)))
+          (appkit-app-close owner)))
       (ignore-errors (delete-directory directory t)))))
 (ert-deftest discourse-auth-source-round-trip-persists-identity-metadata ()
   (let* ((directory (make-temp-file "discourse-auth-source-" t))

@@ -155,7 +155,7 @@
     (condition-case error-data
         (progn
           (setq app
-                (appkit-start-app
+                (appkit-app-start
                  'discourse
                  :id id
                  :state state
@@ -165,7 +165,7 @@
           account)
       (error
        (when (appkit-app-p app)
-         (ignore-errors (appkit-stop-app app)))
+         (ignore-errors (appkit-app-close app)))
        (remhash table-key table)
        (signal (car error-data) (cdr error-data))))))
 
@@ -217,7 +217,7 @@
   "Stop ACCOUNT and every Appkit-owned resource beneath it."
   (when (discourse-account-p account)
     (if-let* ((app (discourse-account-app account)))
-        (appkit-stop-app app)
+        (appkit-app-close app)
       (discourse-runtime--forget-account account))
     t))
 
